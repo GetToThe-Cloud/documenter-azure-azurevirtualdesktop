@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Azure Virtual Desktop Inventory</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🖥️ Azure Virtual Desktop Inventory</h1>
+                <div class="header-actions">
+                    <span id="lastUpdate" class="last-update"></span>
+                    <button id="refreshBtn" class="btn btn-secondary" onclick="refreshInventory()">
+                        <span class="icon">🔄</span> Refresh
+                    </button>
+                    <button id="exportJsonBtn" class="btn btn-secondary" onclick="exportToJSON()">
+                        <span class="icon">📦</span> Export JSON
+                    </button>
+                    <button id="exportBtn" class="btn btn-primary" onclick="exportToPDF()">
+                        <span class="icon">📄</span> Export PDF
+                    </button>
+                    <button id="wafConfigBtn" class="btn btn-secondary" onclick="showSection('wafconfig')">
+                        <span class="icon">⚙️</span> WAF Config
+                    </button>
+                </div>
+            </div>
+            <div id="authStatus" class="auth-status"></div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Navigation Sidebar (iframe) -->
+            <aside class="sidebar">
+                <nav class="nav-menu">
+                    <h3 class="nav-title">Categories</h3>
+                    <ul class="nav-list">
+                        <li><a href="#" onclick="showSection('overview')" class="nav-link active" data-section="overview">
+                            <span class="icon">📊</span> Overview
+                        </a></li>
+                        <li><a href="#" onclick="showSection('hostpools')" class="nav-link" data-section="hostpools">
+                            <span class="icon">🏊</span> Host Pools
+                        </a></li>
+                        <li><a href="#" onclick="showSection('sessionhosts')" class="nav-link" data-section="sessionhosts">
+                            <span class="icon">💻</span> Session Hosts
+                        </a></li>
+                        <li><a href="#" onclick="showSection('workspaces')" class="nav-link" data-section="workspaces">
+                            <span class="icon">📁</span> Workspaces
+                        </a></li>
+                        <li><a href="#" onclick="showSection('applicationgroups')" class="nav-link" data-section="applicationgroups">
+                            <span class="icon">📦</span> Application Groups
+                        </a></li>
+                        <li><a href="#" onclick="showSection('scalingplans')" class="nav-link" data-section="scalingplans">
+                            <span class="icon">⚖️</span> Scaling Plans
+                        </a></li>
+                        <li><a href="#" onclick="showSection('vnets')" class="nav-link" data-section="vnets">
+                            <span class="icon">🌐</span> Virtual Networks
+                        </a></li>
+                        <li><a href="#" onclick="showSection('galleries')" class="nav-link" data-section="galleries">
+                            <span class="icon">🖼️</span> Compute Galleries
+                        </a></li>
+                        <li><a href="#" onclick="showSection('diagram')" class="nav-link" data-section="diagram">
+                            <span class="icon">🔗</span> Connection Diagram
+                        </a></li>
+                        <li><a href="#" onclick="showSection('wafconfig')" class="nav-link" data-section="wafconfig">
+                            <span class="icon">⚙️</span> WAF Configuration
+                        </a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <!-- Content Area -->
+            <main class="content">
+                <!-- Authentication Required -->
+                <div id="authRequired" class="auth-required" style="display: none;">
+                    <div class="auth-card">
+                        <h2>🔐 Azure Authentication</h2>
+                        <p>Authentication is being requested automatically.</p>
+                        <p>Please check your terminal or browser for the device code login prompt.</p>
+                        <button onclick="authenticateAzure()" class="btn btn-primary btn-large">
+                            Retry Sign in
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Overview Section -->
+                <section id="overview" class="content-section active">
+                    <h2>📊 Overview</h2>
+                    <div class="info-banner">
+                        <strong>About Azure Virtual Desktop:</strong>
+                        <p id="overviewExplanation">Azure Virtual Desktop (AVD) is a cloud-based desktop and application virtualization service. This inventory shows all AVD resources and their relationships.</p>
+                    </div>
+                    <div class="summary-cards">
+                        <div class="card">
+                            <div class="card-icon">🏊</div>
+                            <div class="card-content">
+                                <h3 id="totalHostPools">0</h3>
+                                <p>Host Pools</p>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon">💻</div>
+                            <div class="card-content">
+                                <h3 id="totalSessionHosts">0</h3>
+                                <p>Session Hosts</p>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon">✅</div>
+                            <div class="card-content">
+                                <h3 id="availableHosts">0</h3>
+                                <p>Available</p>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon">❌</div>
+                            <div class="card-content">
+                                <h3 id="unavailableHosts">0</h3>
+                                <p>Unavailable</p>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon">📁</div>
+                            <div class="card-content">
+                                <h3 id="totalWorkspaces">0</h3>
+                                <p>Workspaces</p>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon">📦</div>
+                            <div class="card-content">
+                                <h3 id="totalAppGroups">0</h3>
+                                <p>Application Groups</p>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon">⚖️</div>
+                            <div class="card-content">
+                                <h3 id="totalScalingPlans">0</h3>
+                                <p>Scaling Plans</p>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon">🌐</div>
+                            <div class="card-content">
+                                <h3 id="totalVNets">0</h3>
+                                <p>Virtual Networks</p>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon">🖼️</div>
+                            <div class="card-content">
+                                <h3 id="totalGalleries">0</h3>
+                                <p>Compute Galleries</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="subscriptionsList" class="subscriptions-list"></div>
+                </section>
+
+                <!-- Host Pools Section -->
+                <section id="hostpools" class="content-section">
+                    <h2>🏊 Host Pools</h2>
+                    <div class="info-banner">
+                        <strong>What are Host Pools?</strong>
+                        <p id="hostPoolsExplanation">Host pools contain session hosts (VMs) that serve desktops and applications to users. They define the type (pooled/personal) and load balancing method.</p>
+                    </div>
+                    <div id="hostPoolsList" class="data-list"></div>
+                </section>
+
+                <!-- Session Hosts Section -->
+                <section id="sessionhosts" class="content-section">
+                    <h2>💻 Session Hosts</h2>
+                    <div class="info-banner">
+                        <strong>What are Session Hosts?</strong>
+                        <p id="sessionHostsExplanation">Session hosts are the VMs that run user sessions. They connect to virtual networks and can be managed by scaling plans.</p>
+                    </div>
+                    <div id="sessionHostsList" class="data-list"></div>
+                </section>
+
+                <!-- Workspaces Section -->
+                <section id="workspaces" class="content-section">
+                    <h2>📁 Workspaces</h2>
+                    <div id="workspacesList" class="data-list"></div>
+                </section>
+
+                <!-- Application Groups Section -->
+                <section id="applicationgroups" class="content-section">
+                    <h2>📦 Application Groups</h2>
+                    <div id="appGroupsList" class="data-list"></div>
+                </section>
+
+                <!-- Scaling Plans Section -->
+                <section id="scalingplans" class="content-section">
+                    <h2>⚖️ Scaling Plans</h2>
+                    <div class="info-banner">
+                        <strong>What are Scaling Plans?</strong>
+                        <p id="scalingPlansExplanation">Scaling plans automate the start/stop of session hosts based on time schedules to optimize costs.</p>
+                    </div>
+                    <div id="scalingPlansList" class="data-list"></div>
+                </section>
+
+                <!-- Virtual Networks Section -->
+                <section id="vnets" class="content-section">
+                    <h2>🌐 Virtual Networks</h2>
+                    <div class="info-banner">
+                        <strong>What are Virtual Networks?</strong>
+                        <p id="vnetsExplanation">Virtual networks provide network connectivity for session hosts, enabling communication with other Azure services and on-premises resources.</p>
+                    </div>
+                    <div id="vnetsList" class="data-list"></div>
+                </section>
+
+                <!-- Compute Galleries Section -->
+                <section id="galleries" class="content-section">
+                    <h2>🖼️ Compute Galleries</h2>
+                    <div class="info-banner">
+                        <strong>What are Compute Galleries?</strong>
+                        <p id="galleriesExplanation">Compute galleries store and manage custom images used to deploy session hosts with pre-configured software.</p>
+                    </div>
+                    <div id="galleriesList" class="data-list"></div>
+                </section>
+
+                <!-- Diagram Section -->
+                <section id="diagram" class="content-section">
+                    <h2>🔗 Connection Diagram</h2>
+                    <p class="section-description">Visual representation of AVD resource connections</p>
+                    <div id="networkDiagram" class="diagram-container"></div>
+                </section>
+
+                <!-- WAF Configuration Section -->
+                <section id="wafconfig" class="content-section">
+                    <h2>⚙️ WAF Assessment Configuration</h2>
+                    <div class="info-banner">
+                        <strong>Well-Architected Framework Assessment Configuration:</strong>
+                        <p>Configure the scoring rules and weights for the WAF assessment. Changes can be saved and reloaded.</p>
+                    </div>
+                    
+                    <div class="waf-config-actions" style="margin-bottom: 1rem; display: flex; gap: 0.5rem;">
+                        <button class="btn btn-secondary" onclick="downloadWAFConfig()">
+                            <span class="icon">💾</span> Download Config
+                        </button>
+                        <button class="btn btn-secondary" onclick="document.getElementById('uploadConfigInput').click()">
+                            <span class="icon">📤</span> Upload Config
+                        </button>
+                        <input type="file" id="uploadConfigInput" accept=".json" style="display: none;" onchange="uploadWAFConfig(event)">
+                        <button class="btn btn-primary" onclick="reloadWAFConfig()">
+                            <span class="icon">🔄</span> Reload Config
+                        </button>
+                    </div>
+
+                    <div id="wafConfigContent" class="waf-config-content">
+                        <!-- Config will be displayed here -->
+                        <p class="text-secondary">Loading configuration...</p>
+                    </div>
+                </section>
+            </main>
+            
+            <!-- Footer -->
+            <footer style="margin-top: 3rem; padding: 2rem 1.5rem; text-align: center; border-top: 1px solid rgba(255,255,255,0.1); color: var(--text-secondary); font-size: 0.85rem;">
+                <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; flex-wrap: wrap;">
+                    <img src="https://www.gettothe.cloud/wp-content/uploads/2023/07/WhatsApp-Image-2023-05-23-at-23.24.08-150x150.webp" 
+                         alt="Alex ter Neuzen" 
+                         style="width: 60px; height: 60px; border-radius: 50%; border: 2px solid var(--primary-color); object-fit: cover;">
+                    <div style="text-align: left;">
+                        <p style="margin: 0; font-size: 0.95rem;"><strong style="color: var(--text-primary);">Alex ter Neuzen</strong></p>
+                        <p style="margin: 0.25rem 0 0 0;">
+                            <a href="https://www.gettothe.cloud" target="_blank" style="color: var(--primary-color); text-decoration: none; font-weight: 500;">
+                                🌐 www.gettothe.cloud
+                            </a>
+                        </p>
+                    </div>
+                </div>
+                <div style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.75rem;">
+                    <span id="appVersion">Version: Loading...</span>
+                </div>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+        <div class="loading-container">
+            <div class="spinner"></div>
+            <p id="loadingStatus">Loading inventory data...</p>
+            <div id="loadingProgress" class="progress-bar">
+                <div id="loadingProgressFill" class="progress-fill"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

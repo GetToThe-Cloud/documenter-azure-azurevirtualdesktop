@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JavaScript Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #1e1e1e; color: #fff; }
+        h1 { color: #0078d4; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 10px 0; background: #0078d4; color: #fff; border: none; border-radius: 4px; }
+        button:hover { background: #106ebe; }
+        #console { background: #2d2d30; padding: 20px; margin-top: 20px; font-family: 'Courier New', monospace; border-radius: 4px; max-height: 500px; overflow-y: auto; }
+        .log-line { margin: 5px 0; }
+        .success { color: #4caf50; }
+        .error { color: #f44336; }
+        .info { color: #2196f3; }
+    </style>
+</head>
+<body>
+    <h1>🔬 AVD Inventory Server Test</h1>
+    <div id="status">Checking...</div>
+    <button onclick="testAuth()">🔄 Test Auth Status</button>
+    <button onclick="testFetch()">🌐 Test Basic Fetch</button>
+    <button onclick="clearConsole()">🗑️ Clear Console</button>
+    <div id="console"></div>
+
+    <script>
+        const consoleDiv = document.getElementById('console');
+        const statusDiv = document.getElementById('status');
+        
+        function clearConsole() {
+            consoleDiv.innerHTML = '';
+        }
+        
+        function log(msg, type = 'info') {
+            console.log(msg);
+            const line = document.createElement('div');
+            line.className = `log-line ${type}`;
+            line.textContent = new Date().toLocaleTimeString() + ' - ' + msg;
+            consoleDiv.appendChild(line);
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+        
+        log('✅ JavaScript is running', 'success');
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            log('✅ DOMContentLoaded fired', 'success');
+            statusDiv.textContent = 'JavaScript is working! Click buttons to test API.';
+            testAuth();
+        });
+        
+        async function testFetch() {
+            log('🔄 Testing basic fetch to /...', 'info');
+            try {
+                const response = await fetch('/');
+                log(`📥 Response status: ${response.status}`, 'success');
+                log(`📦 Response type: ${response.headers.get('content-type')}`, 'info');
+            } catch (error) {
+                log(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testAuth() {
+            log('🔄 Testing /api/auth/status...', 'info');
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000);
+                
+                const response = await fetch('/api/auth/status', {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                
+                log(`📥 Response status: ${response.status}`, response.ok ? 'success' : 'error');
+                log(`📦 Content-Type: ${response.headers.get('content-type')}`, 'info');
+                
+                const text = await response.text();
+                log(`📄 Response length: ${text.length} chars`, 'info');
+                
+                try {
+                    const data = JSON.parse(text);
+                    log(`✅ JSON parsed successfully:`, 'success');
+                    log(`   Authenticated: ${data.authenticated}`, data.authenticated ? 'success' : 'info');
+                    if (data.context) {
+                        log(`   Account: ${data.context.account}`, 'success');
+                        log(`   Subscription: ${data.context.subscription}`, 'info');
+                    }
+                    if (data.error) {
+                        log(`   Error: ${data.error}`, 'error');
+                    }
+                } catch (jsonError) {
+                    log(`❌ Failed to parse JSON: ${jsonError.message}`, 'error');
+                    log(`   Raw response: ${text.substring(0, 200)}`, 'error');
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    log(`❌ Request timeout after 5 seconds`, 'error');
+                } else {
+                    log(`❌ Error: ${error.message}`, 'error');
+                    log(`   Error type: ${error.name}`, 'error');
+                }
+            }
+        }
+    </script>
+</body>
+</html>
