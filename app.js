@@ -1,6 +1,6 @@
 // Azure Virtual Desktop Inventory - Client Application
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.2.0';
 console.log(`🚀 AVD Inventory app.js loaded - Version ${APP_VERSION}`);
 
 let inventoryData = null;
