@@ -1,6 +1,17 @@
 # Azure Virtual Desktop Inventory - Change Summary
 
-## Latest Update: 2026-03-06 (v1.2)
+## Latest Update: 2026-04-01 (v1.2.223)
+
+### Module Version 1.2.223
+
+- Version bump to 1.2.223 for PowerShell Gallery publish
+- **PSGallery packaging**: `documenter-azure-azurevirtualdesktop.psd1` manifest and `.psm1` root module added
+- **Edit-WAFConfig wizard**: new interactive console command to edit `waf-config.json` without touching JSON directly — supports pillar metadata, rule add/edit/delete, status mapping thresholds & colours
+- **README**: updated with PSGallery install instructions and `Edit-WAFConfig` documentation
+
+---
+
+## Previous: 2026-03-06 (v1.2)
 
 ### Architecture Improvement: Server-Side Configuration Loading
 

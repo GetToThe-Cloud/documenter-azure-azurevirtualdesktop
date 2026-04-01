@@ -871,3 +871,275 @@ function Get-AVDConnectionDiagram {
     Write-Host "    ✓ Diagram generation complete" -ForegroundColor Green
     return $diagram
 }
+
+function Edit-WAFConfig {
+    <#
+    .SYNOPSIS
+        Interactive wizard to edit the WAF assessment configuration file.
+    .DESCRIPTION
+        Provides a menu-driven console wizard for viewing and editing the
+        waf-config.json used by the AVD Inventory Dashboard. You can update
+        pillar descriptions, add/remove/edit rules, adjust scoring thresholds,
+        and modify status mapping colours — all without touching JSON directly.
+    .PARAMETER ConfigPath
+        Full path to the waf-config.json file.
+        Defaults to waf-config.json in the same directory as this script.
+    .EXAMPLE
+        Edit-WAFConfig
+    .EXAMPLE
+        Edit-WAFConfig -ConfigPath 'C:\MyConfig\waf-config.json'
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ConfigPath = (Join-Path $PSScriptRoot 'waf-config.json')
+    )
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    function Write-Header {
+        param([string]$Title)
+        $width = 60
+        $line  = '─' * $width
+        Write-Host ""
+        Write-Host $line -ForegroundColor DarkCyan
+        Write-Host ("  {0}" -f $Title) -ForegroundColor Cyan
+        Write-Host $line -ForegroundColor DarkCyan
+    }
+
+    function Read-Input {
+        param([string]$Prompt, [string]$Default = '')
+        if ($Default -ne '') {
+            $display = "$Prompt [$Default]: "
+        } else {
+            $display = "${Prompt}: "
+        }
+        Write-Host $display -ForegroundColor Yellow -NoNewline
+        $input = Read-Host
+        if ($input -eq '') { return $Default }
+        return $input
+    }
+
+    function Read-MenuChoice {
+        param([string[]]$Options, [string]$Prompt = 'Choose')
+        for ($i = 0; $i -lt $Options.Count; $i++) {
+            Write-Host ("  [{0}] {1}" -f ($i + 1), $Options[$i]) -ForegroundColor White
+        }
+        do {
+            Write-Host ""
+            Write-Host "$Prompt (1-$($Options.Count)): " -ForegroundColor Yellow -NoNewline
+            $raw = Read-Host
+            $n   = 0
+            $valid = [int]::TryParse($raw, [ref]$n) -and $n -ge 1 -and $n -le $Options.Count
+            if (-not $valid) {
+                Write-Host "  Invalid choice — enter a number between 1 and $($Options.Count)." -ForegroundColor Red
+            }
+        } until ($valid)
+        return $n
+    }
+
+    function Save-Config {
+        param($Config)
+        $json = $Config | ConvertTo-Json -Depth 20
+        Set-Content -Path $ConfigPath -Value $json -Encoding UTF8
+        Write-Host ""
+        Write-Host "  ✓ Configuration saved to: $ConfigPath" -ForegroundColor Green
+    }
+
+    # ── load config ──────────────────────────────────────────────────────────
+
+    if (-not (Test-Path $ConfigPath)) {
+        Write-Host "  ✗ Configuration file not found: $ConfigPath" -ForegroundColor Red
+        return
+    }
+
+    try {
+        $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "  ✗ Failed to load configuration: $($_.Exception.Message)" -ForegroundColor Red
+        return
+    }
+
+    $pillarKeys = @('reliability', 'security', 'costOptimization', 'operationalExcellence', 'performance')
+
+    # ── main menu loop ────────────────────────────────────────────────────────
+
+    $exit = $false
+    while (-not $exit) {
+        Write-Header "WAF Configuration Wizard  (v$($config.version))"
+        Write-Host "  Config: $ConfigPath" -ForegroundColor Gray
+        Write-Host ""
+
+        $mainOptions = @(
+            'View pillar summary'
+            'Edit a pillar (name / description / maxChecks)'
+            'Edit rules inside a pillar'
+            'Edit status mapping (score thresholds & colours)'
+            'Edit config version / description'
+            'Save and exit'
+            'Exit without saving'
+        )
+        $choice = Read-MenuChoice -Options $mainOptions -Prompt 'Main menu'
+
+        switch ($choice) {
+
+            # ── 1. view summary ──────────────────────────────────────────────
+            1 {
+                Write-Header 'Pillar Summary'
+                foreach ($key in $pillarKeys) {
+                    $p = $config.pillars.$key
+                    if ($null -eq $p) { continue }
+                    $ruleCount = if ($p.rules) { $p.rules.Count } else { 0 }
+                    Write-Host ("  {0,-28} maxChecks={1,3}  rules={2,2}  {3}" -f `
+                        $p.name, $p.maxChecks, $ruleCount, $p.description) -ForegroundColor White
+                }
+                Write-Host ""
+                Write-Host '  Press Enter to continue...' -ForegroundColor Gray
+                Read-Host | Out-Null
+            }
+
+            # ── 2. edit pillar metadata ──────────────────────────────────────
+            2 {
+                Write-Header 'Edit Pillar Metadata'
+                $pChoice = Read-MenuChoice -Options ($pillarKeys | ForEach-Object { $config.pillars.$_.name }) `
+                    -Prompt 'Select pillar'
+                $pKey    = $pillarKeys[$pChoice - 1]
+                $pillar  = $config.pillars.$pKey
+
+                Write-Host ""
+                $pillar.name        = Read-Input 'Pillar name'        $pillar.name
+                $pillar.description = Read-Input 'Description'        $pillar.description
+                $maxRaw             = Read-Input 'Max checks (points)' $pillar.maxChecks.ToString()
+                $maxN               = 0
+                if ([int]::TryParse($maxRaw, [ref]$maxN) -and $maxN -gt 0) {
+                    $pillar.maxChecks = $maxN
+                } else {
+                    Write-Host '  Invalid number — maxChecks unchanged.' -ForegroundColor Yellow
+                }
+                Write-Host "  ✓ Pillar '$($pillar.name)' metadata updated." -ForegroundColor Green
+            }
+
+            # ── 3. edit rules ────────────────────────────────────────────────
+            3 {
+                Write-Header 'Edit Rules'
+                $pChoice = Read-MenuChoice -Options ($pillarKeys | ForEach-Object { $config.pillars.$_.name }) `
+                    -Prompt 'Select pillar'
+                $pKey   = $pillarKeys[$pChoice - 1]
+                $pillar = $config.pillars.$pKey
+
+                $ruleExit = $false
+                while (-not $ruleExit) {
+                    Write-Header ("Rules in: $($pillar.name)")
+                    $ruleNames = @($pillar.rules | ForEach-Object { "$($_.id) — $($_.name)  [$($_.points) pt(s)]" })
+                    $ruleOptions = $ruleNames + @('Add new rule', 'Back')
+                    $rChoice = Read-MenuChoice -Options $ruleOptions -Prompt 'Select rule'
+
+                    if ($rChoice -eq $ruleOptions.Count) {
+                        # Back
+                        $ruleExit = $true
+                    } elseif ($rChoice -eq ($ruleOptions.Count - 1)) {
+                        # Add new rule
+                        Write-Header 'Add New Rule'
+                        $newRule = [ordered]@{
+                            id          = Read-Input 'Rule ID (e.g. rel-10)'
+                            name        = Read-Input 'Rule name'
+                            description = Read-Input 'Description'
+                            points      = 0
+                        }
+                        $ptsRaw = Read-Input 'Points'
+                        $ptsN   = 0
+                        if ([int]::TryParse($ptsRaw, [ref]$ptsN) -and $ptsN -ge 0) {
+                            $newRule.points = $ptsN
+                        }
+                        $newRule.successMessage = Read-Input 'Success message'
+                        $newRule.failureMessage = Read-Input 'Failure message'
+                        $newRule.recommendation = Read-Input 'Recommendation (optional)'
+
+                        $pillar.rules += [PSCustomObject]$newRule
+                        Write-Host "  ✓ Rule '$($newRule.id)' added." -ForegroundColor Green
+
+                    } else {
+                        # Edit existing rule
+                        $rule = $pillar.rules[$rChoice - 1]
+                        Write-Header "Edit Rule: $($rule.id)"
+
+                        $rule.name        = Read-Input 'Name'        $rule.name
+                        $rule.description = Read-Input 'Description' $rule.description
+
+                        $ptsRaw = Read-Input 'Points' $rule.points.ToString()
+                        $ptsN   = 0
+                        if ([int]::TryParse($ptsRaw, [ref]$ptsN) -and $ptsN -ge 0) {
+                            $rule.points = $ptsN
+                        }
+
+                        if ($rule.PSObject.Properties['successMessage']) {
+                            $rule.successMessage = Read-Input 'Success message' $rule.successMessage
+                        }
+                        if ($rule.PSObject.Properties['warningMessage']) {
+                            $rule.warningMessage = Read-Input 'Warning message' $rule.warningMessage
+                        }
+                        if ($rule.PSObject.Properties['failureMessage']) {
+                            $rule.failureMessage = Read-Input 'Failure message' $rule.failureMessage
+                        }
+                        if ($rule.PSObject.Properties['recommendation']) {
+                            $rule.recommendation = Read-Input 'Recommendation' $rule.recommendation
+                        }
+
+                        Write-Host ""
+                        Write-Host "  Delete this rule? " -ForegroundColor Yellow -NoNewline
+                        $del = Read-Host '[y/N]'
+                        if ($del -match '^[Yy]$') {
+                            $pillar.rules = @($pillar.rules | Where-Object { $_.id -ne $rule.id })
+                            Write-Host "  ✓ Rule '$($rule.id)' deleted." -ForegroundColor Green
+                        } else {
+                            Write-Host "  ✓ Rule '$($rule.id)' updated." -ForegroundColor Green
+                        }
+                    }
+                }
+            }
+
+            # ── 4. status mapping ────────────────────────────────────────────
+            4 {
+                Write-Header 'Edit Status Mapping'
+                $statusKeys = @('excellent', 'good', 'fair', 'needsImprovement')
+                foreach ($sk in $statusKeys) {
+                    $s = $config.statusMapping.$sk
+                    Write-Host ""
+                    Write-Host "  ── $sk ──" -ForegroundColor Cyan
+                    $threshRaw = Read-Input "  Threshold (score %)" $s.threshold.ToString()
+                    $threshN   = 0
+                    if ([int]::TryParse($threshRaw, [ref]$threshN) -and $threshN -ge 0) {
+                        $s.threshold = $threshN
+                    }
+                    $colRaw = Read-Input "  Hex colour" $s.color
+                    if ($colRaw -match '^#[0-9A-Fa-f]{6}$') {
+                        $s.color = $colRaw
+                    } elseif ($colRaw -ne $s.color) {
+                        Write-Host '  Invalid hex colour — value unchanged.' -ForegroundColor Yellow
+                    }
+                }
+                Write-Host "  ✓ Status mapping updated." -ForegroundColor Green
+            }
+
+            # ── 5. version / description ─────────────────────────────────────
+            5 {
+                Write-Header 'Edit Config Version / Description'
+                $config.version     = Read-Input 'Version'     $config.version
+                $config.description = Read-Input 'Description' $config.description
+                Write-Host "  ✓ Metadata updated." -ForegroundColor Green
+            }
+
+            # ── 6. save and exit ─────────────────────────────────────────────
+            6 {
+                Save-Config $config
+                $exit = $true
+            }
+
+            # ── 7. exit without saving ───────────────────────────────────────
+            7 {
+                Write-Host ""
+                Write-Host "  Changes discarded. Configuration file was NOT modified." -ForegroundColor Yellow
+                $exit = $true
+            }
+        }
+    }
+}

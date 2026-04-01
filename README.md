@@ -5,6 +5,7 @@ A comprehensive, production-ready web-based dashboard for documenting and monito
 ![Azure Virtual Desktop](https://img.shields.io/badge/Azure-Virtual_Desktop-0078D4?style=flat&logo=microsoft-azure)
 ![PowerShell](https://img.shields.io/badge/PowerShell-7+-5391FE?style=flat&logo=powershell)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![PowerShell Gallery](https://img.shields.io/powershellgallery/v/documenter-azure-azurevirtualdesktop?label=PSGallery&logo=powershell)
 
 ## ✨ Key Features
 
@@ -59,6 +60,7 @@ A comprehensive, production-ready web-based dashboard for documenting and monito
 - **Customizable rules** - Download, modify, upload custom configurations
 - **Live reload** - Update configuration without restarting server
 - **Version control** - Track configuration changes over time
+- **Console wizard** - Edit rules, thresholds, and scoring with `Edit-WAFConfig` — no JSON editing required
 
 ### 📦 Data Export Options
 - **PDF Export** - Complete documentation with WAF assessment
@@ -170,7 +172,13 @@ New-AzRoleAssignment -SignInName $userId `
 
 ## 🚀 Quick Start
 
-### 1. Clone or Download
+### Option A — Install from PowerShell Gallery (recommended)
+```powershell
+Install-Module documenter-azure-azurevirtualdesktop -Scope CurrentUser
+Start-AVDInventoryServer
+```
+
+### Option B — Clone or Download
 ```bash
 git clone <repository-url>
 cd azurevirtualdesktop-inventory
@@ -263,7 +271,7 @@ The dashboard automatically evaluates your AVD environment against Microsoft's W
 3. Expand each pillar to see findings and recommendations
 4. Color-coded scores indicate: Excellent (green), Good (blue), Fair (orange), Needs Improvement (red)
 
-**Customizing Assessment Rules:**
+**Customizing Assessment Rules — via browser:**
 1. Navigate to **WAF Config** section
 2. Browse all assessment rules and conditions
 3. Click **Download Config** to save current configuration
@@ -271,11 +279,45 @@ The dashboard automatically evaluates your AVD environment against Microsoft's W
 5. Click **Upload Config** to load your custom configuration
 6. Click **Reload Config** to refresh from server
 
+**Customizing Assessment Rules — via console wizard:**
+```powershell
+Edit-WAFConfig
+# or point to a different file:
+Edit-WAFConfig -ConfigPath 'C:\MyConfig\waf-config.json'
+```
+The wizard walks you through every editable setting without touching JSON by hand. See [Edit-WAFConfig Wizard](#️-edit-wafconfig-wizard) below for details.
+
 **Configuration File:**
 - Located at `waf-config.json` in the application directory
 - Loaded by server on startup
 - Contains 40+ rules across 5 pillars
 - See [WAF-CONFIG-GUIDE.md](WAF-CONFIG-GUIDE.md) for detailed documentation
+
+### ⚙️ Edit-WAFConfig Wizard
+
+`Edit-WAFConfig` is a menu-driven PowerShell console wizard that lets you edit `waf-config.json` without opening the file directly.
+
+```powershell
+Edit-WAFConfig
+```
+
+**Main menu options:**
+
+| # | Option |
+|---|--------|
+| 1 | View pillar summary (name, maxChecks, rule count) |
+| 2 | Edit pillar metadata (name, description, maxChecks) |
+| 3 | Add, edit, or delete rules inside a pillar |
+| 4 | Edit status mapping — score thresholds and hex colours |
+| 5 | Edit config version and top-level description |
+| 6 | **Save and exit** (writes changes to waf-config.json) |
+| 7 | Exit without saving |
+
+**Per-rule fields you can edit:** id, name, description, points, successMessage, warningMessage, failureMessage, recommendation.
+
+> Changes are only written on option 6. You can safely explore and cancel with option 7.
+
+---
 
 ### Exporting Data
 
@@ -627,18 +669,28 @@ For production use beyond localhost:
 
 ```
 azurevirtualdesktop-inventory/
-├── Start-AVDInventoryServer.ps1  # Main web server (HTTP listener, routing, WAF config loading)
-├── Get-AVDInventory.ps1          # Inventory collection module (Azure queries)
-├── waf-config.json               # Well-Architected Framework assessment rules (40+ rules)
-├── WAF-CONFIG-GUIDE.md           # Documentation for WAF configuration system
-├── CHANGES.md                    # Version history and change log
-├── index.html                    # Dashboard UI (structure)
-├── styles.css                    # Dark theme styling (colors, layouts)
-├── app.js                        # Client application (logic, WAF assessment, PDF/JSON export)
-├── test.html                     # Diagnostic test page
-├── start.sh                      # Linux/macOS launcher script
-└── README.md                     # This documentation
+├── documenter-azure-azurevirtualdesktop.psd1  # PowerShell Gallery module manifest
+├── documenter-azure-azurevirtualdesktop.psm1  # Module root (dot-sources scripts, exports functions)
+├── Start-AVDInventoryServer.ps1               # Main web server (HTTP listener, routing, WAF config)
+├── Get-AVDInventory.ps1                       # Inventory collection + Edit-WAFConfig wizard
+├── waf-config.json                            # Well-Architected Framework assessment rules (40+ rules)
+├── WAF-CONFIG-GUIDE.md                        # Documentation for WAF configuration system
+├── CHANGES.md                                 # Version history and change log
+├── index.html                                 # Dashboard UI (structure)
+├── styles.css                                 # Dark theme styling (colors, layouts)
+├── app.js                                     # Client application (logic, WAF assessment, PDF/JSON export)
+├── test.html                                  # Diagnostic test page
+├── start.sh                                   # Linux/macOS launcher script
+└── README.md                                  # This documentation
 ```
+
+**Exported module functions:**
+
+| Function | Description |
+|---|---|
+| `Start-AVDInventoryServer` | Start the local web dashboard |
+| `Get-AVDInventoryData` | Collect AVD inventory data from Azure |
+| `Edit-WAFConfig` | Interactive console wizard to edit `waf-config.json` |
 
 ## 🤝 Contributing
 
