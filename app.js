@@ -7,6 +7,34 @@ let inventoryData = null;
 let diagramData = null;
 let network = null;
 
+// Escape untrusted values (Azure resource names etc.) before inserting into HTML
+function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+const esc = escapeHtml;
+
+// Safely evaluate numeric comparison expressions like "> 0" or ">= 2" (replaces eval)
+function compareNumeric(left, expression) {
+    const match = /^\s*(===|==|!==|!=|>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$/.exec(String(expression));
+    if (!match) return false;
+    const right = parseFloat(match[2]);
+    switch (match[1]) {
+        case '===': case '==': return left === right;
+        case '!==': case '!=': return left !== right;
+        case '>=': return left >= right;
+        case '<=': return left <= right;
+        case '>': return left > right;
+        case '<': return left < right;
+        default: return false;
+    }
+}
+
 // WAF Configuration - Loaded from server on startup
 let wafConfig = null;
 
@@ -62,7 +90,7 @@ async function checkAuthStatus() {
         if (data.authenticated) {
             console.log('✅ Authenticated as:', data.context.account);
             authStatusDiv.className = 'auth-status authenticated';
-            authStatusDiv.innerHTML = `✓ Connected to Azure as <strong>${data.context.account}</strong> | Subscription: <strong>${data.context.subscription}</strong>`;
+            authStatusDiv.innerHTML = `✓ Connected to Azure as <strong>${esc(data.context.account)}</strong> | Subscription: <strong>${esc(data.context.subscription)}</strong>`;
             
             document.getElementById('authRequired').style.display = 'none';
             await loadInventoryData();
@@ -104,7 +132,7 @@ async function requestAzureLogin() {
             await checkAuthStatus();
         } else {
             authStatusDiv.className = 'auth-status not-authenticated';
-            authStatusDiv.innerHTML = `⚠ Authentication required. ${data.message || 'Please sign in to Azure.'}`;
+            authStatusDiv.innerHTML = `⚠ Authentication required. ${esc(data.message) || 'Please sign in to Azure.'}`;
         }
     } catch (error) {
         console.error('Error requesting Azure login:', error);
@@ -272,9 +300,9 @@ function renderOverview() {
         subDiv.className = 'subscription-section';
         subDiv.innerHTML = `
             <div class="subscription-header">
-                <h3>${sub.name}</h3>
+                <h3>${esc(sub.name)}</h3>
                 <div style="font-size: 0.9rem; margin-top: 0.5rem; opacity: 0.9;">
-                    ID: ${sub.id}
+                    ID: ${esc(sub.id)}
                 </div>
             </div>
             <div class="subscription-content">
@@ -305,7 +333,7 @@ function renderOverview() {
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Tenant ID</div>
-                        <div class="data-field-value" style="font-size: 0.85rem;">${sub.tenantId}</div>
+                        <div class="data-field-value" style="font-size: 0.85rem;">${esc(sub.tenantId)}</div>
                     </div>
                 </div>
             </div>
@@ -334,29 +362,29 @@ function renderHostPools() {
             
             hpDiv.innerHTML = `
                 <div class="data-item-header">
-                    <h3>${hp.name}</h3>
-                    <span class="badge badge-info">${hp.hostPoolType}</span>
+                    <h3>${esc(hp.name)}</h3>
+                    <span class="badge badge-info">${esc(hp.hostPoolType)}</span>
                 </div>
                 <div class="data-item-details">
                     <div class="data-field">
                         <div class="data-field-label">Resource Group</div>
-                        <div class="data-field-value">${hp.resourceGroup}</div>
+                        <div class="data-field-value">${esc(hp.resourceGroup)}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Location</div>
-                        <div class="data-field-value">${hp.location}</div>
+                        <div class="data-field-value">${esc(hp.location)}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Load Balancer</div>
-                        <div class="data-field-value">${hp.loadBalancerType}</div>
+                        <div class="data-field-value">${esc(hp.loadBalancerType)}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Max Session Limit</div>
-                        <div class="data-field-value">${hp.maxSessionLimit}</div>
+                        <div class="data-field-value">${esc(hp.maxSessionLimit)}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Session Hosts</div>
-                        <div class="data-field-value">${hp.sessionHostCount} total (${hp.availableHosts} available)</div>
+                        <div class="data-field-value">${esc(hp.sessionHostCount)} total (${esc(hp.availableHosts)} available)</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Registration Token</div>
@@ -365,7 +393,7 @@ function renderHostPools() {
                     ${hp.scalingPlanReference ? `
                     <div class="data-field">
                         <div class="data-field-label">Scaling Plan</div>
-                        <div class="data-field-value"><span class="badge badge-success">✓ ${hp.scalingPlanReference}</span></div>
+                        <div class="data-field-value"><span class="badge badge-success">✓ ${esc(hp.scalingPlanReference)}</span></div>
                     </div>
                     ` : ''}
                 </div>
@@ -392,7 +420,7 @@ function renderSessionHosts() {
             if (hp.sessionHosts.length > 0) {
                 const hpSection = document.createElement('div');
                 hpSection.style.marginBottom = '2rem';
-                hpSection.innerHTML = `<h3 style="margin-bottom: 1rem; color: var(--secondary-color);">${hp.name}</h3>`;
+                hpSection.innerHTML = `<h3 style="margin-bottom: 1rem; color: var(--secondary-color);">${esc(hp.name)}</h3>`;
                 
                 const table = document.createElement('div');
                 table.className = 'table-container';
@@ -430,25 +458,25 @@ function renderSessionHosts() {
                     let imageSource = 'N/A';
                     if (sh.image) {
                         if (sh.image.type === 'Gallery') {
-                            imageSource = `🖼️ ${sh.image.imageName || 'Unknown'} (v${sh.image.version || '?'})`;
+                            imageSource = `🖼️ ${esc(sh.image.imageName) || 'Unknown'} (v${esc(sh.image.version) || '?'})`;
                         } else if (sh.image.type === 'Marketplace') {
-                            imageSource = `🏪 ${sh.image.publisher || 'Unknown'}/${sh.image.offer || 'Unknown'}`;
+                            imageSource = `🏪 ${esc(sh.image.publisher) || 'Unknown'}/${esc(sh.image.offer) || 'Unknown'}`;
                         }
                     }
                     
                     const row = document.createElement('tr');
                     row.innerHTML = `
-                        <td>${sh.name}</td>
-                        <td><span class="badge ${statusBadge}">${sh.status}</span></td>
-                        <td style="font-size: 0.85rem;">${sh.vmSize || 'N/A'}</td>
-                        <td>${sh.sessions}</td>
+                        <td>${esc(sh.name)}</td>
+                        <td><span class="badge ${statusBadge}">${esc(sh.status)}</span></td>
+                        <td style="font-size: 0.85rem;">${esc(sh.vmSize) || 'N/A'}</td>
+                        <td>${esc(sh.sessions)}</td>
                         <td>${sh.allowNewSession ? '✓' : '✗'}</td>
-                        <td style="font-size: 0.85rem;">${vnetInfo}</td>
-                        <td style="font-size: 0.85rem;">${privateIP}</td>
+                        <td style="font-size: 0.85rem;">${esc(vnetInfo)}</td>
+                        <td style="font-size: 0.85rem;">${esc(privateIP)}</td>
                         <td style="font-size: 0.85rem;">${imageSource}</td>
-                        <td>${sh.osVersion || 'N/A'}</td>
-                        <td>${sh.agentVersion || 'N/A'}</td>
-                        <td style="font-size: 0.85rem;">${lastHB}</td>
+                        <td>${esc(sh.osVersion) || 'N/A'}</td>
+                        <td>${esc(sh.agentVersion) || 'N/A'}</td>
+                        <td style="font-size: 0.85rem;">${esc(lastHB)}</td>
                     `;
                     tbody.appendChild(row);
                 });
@@ -475,26 +503,26 @@ function renderWorkspaces() {
             const wsDiv = document.createElement('div');
             wsDiv.className = 'data-item';
             wsDiv.innerHTML = `
-                <h3>${ws.name}</h3>
+                <h3>${esc(ws.name)}</h3>
                 <div class="data-item-details">
                     <div class="data-field">
                         <div class="data-field-label">Friendly Name</div>
-                        <div class="data-field-value">${ws.friendlyName || 'N/A'}</div>
+                        <div class="data-field-value">${esc(ws.friendlyName) || 'N/A'}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Resource Group</div>
-                        <div class="data-field-value">${ws.resourceGroup}</div>
+                        <div class="data-field-value">${esc(ws.resourceGroup)}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Location</div>
-                        <div class="data-field-value">${ws.location}</div>
+                        <div class="data-field-value">${esc(ws.location)}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Application Groups</div>
                         <div class="data-field-value">${ws.applicationGroupReferences ? ws.applicationGroupReferences.length : 0}</div>
                     </div>
                 </div>
-                ${ws.description ? `<p style="margin-top: 1rem; color: var(--text-secondary);">${ws.description}</p>` : ''}
+                ${ws.description ? `<p style="margin-top: 1rem; color: var(--text-secondary);">${esc(ws.description)}</p>` : ''}
             `;
             container.appendChild(wsDiv);
         });
@@ -537,9 +565,9 @@ function renderApplicationGroups() {
                                 <tbody>
                                     ${ag.applications.map(app => `
                                         <tr>
-                                            <td>${app.name}</td>
-                                            <td>${app.friendlyName || 'N/A'}</td>
-                                            <td style="font-size: 0.8rem;">${app.filePath || 'N/A'}</td>
+                                            <td>${esc(app.name)}</td>
+                                            <td>${esc(app.friendlyName) || 'N/A'}</td>
+                                            <td style="font-size: 0.8rem;">${esc(app.filePath) || 'N/A'}</td>
                                             <td>${app.showInPortal ? '✓' : '✗'}</td>
                                         </tr>
                                     `).join('')}
@@ -552,21 +580,21 @@ function renderApplicationGroups() {
             
             agDiv.innerHTML = `
                 <div class="data-item-header">
-                    <h3>${ag.name}</h3>
-                    <span class="badge badge-info">${ag.applicationGroupType}</span>
+                    <h3>${esc(ag.name)}</h3>
+                    <span class="badge badge-info">${esc(ag.applicationGroupType)}</span>
                 </div>
                 <div class="data-item-details">
                     <div class="data-field">
                         <div class="data-field-label">Friendly Name</div>
-                        <div class="data-field-value">${ag.friendlyName || 'N/A'}</div>
+                        <div class="data-field-value">${esc(ag.friendlyName) || 'N/A'}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Resource Group</div>
-                        <div class="data-field-value">${ag.resourceGroup}</div>
+                        <div class="data-field-value">${esc(ag.resourceGroup)}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Location</div>
-                        <div class="data-field-value">${ag.location}</div>
+                        <div class="data-field-value">${esc(ag.location)}</div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-label">Applications</div>
@@ -619,12 +647,12 @@ function renderScalingPlans() {
                                     <tbody>
                                         ${sp.schedules.map(schedule => `
                                             <tr>
-                                                <td>${schedule.name || 'N/A'}</td>
-                                                <td>${schedule.daysOfWeek || 'N/A'}</td>
-                                                <td>${schedule.rampUpStartTime || 'N/A'}</td>
-                                                <td>${schedule.peakStartTime || 'N/A'}</td>
-                                                <td>${schedule.rampDownStartTime || 'N/A'}</td>
-                                                <td>${schedule.offPeakStartTime || 'N/A'}</td>
+                                                <td>${esc(schedule.name) || 'N/A'}</td>
+                                                <td>${esc(schedule.daysOfWeek) || 'N/A'}</td>
+                                                <td>${esc(schedule.rampUpStartTime) || 'N/A'}</td>
+                                                <td>${esc(schedule.peakStartTime) || 'N/A'}</td>
+                                                <td>${esc(schedule.rampDownStartTime) || 'N/A'}</td>
+                                                <td>${esc(schedule.offPeakStartTime) || 'N/A'}</td>
                                             </tr>
                                         `).join('')}
                                     </tbody>
@@ -644,7 +672,7 @@ function renderScalingPlans() {
                                     const hpName = hpRef.hostPoolArmPath.split('/').pop();
                                     const enabledBadge = hpRef.scalingPlanEnabled ? 'badge-success' : 'badge-warning';
                                     const enabledText = hpRef.scalingPlanEnabled ? 'Enabled' : 'Disabled';
-                                    return `<span class="badge ${enabledBadge}" style="margin-right: 0.5rem; margin-bottom: 0.5rem;">${hpName}: ${enabledText}</span>`;
+                                    return `<span class="badge ${enabledBadge}" style="margin-right: 0.5rem; margin-bottom: 0.5rem;">${esc(hpName)}: ${enabledText}</span>`;
                                 }).join('')}
                             </div>
                         </div>
@@ -653,29 +681,29 @@ function renderScalingPlans() {
                 
                 spDiv.innerHTML = `
                     <div class="data-item-header">
-                        <h3>${sp.name}</h3>
-                        <span class="badge badge-info">${sp.hostPoolType || 'N/A'}</span>
+                        <h3>${esc(sp.name)}</h3>
+                        <span class="badge badge-info">${esc(sp.hostPoolType) || 'N/A'}</span>
                     </div>
                     <div class="data-item-details">
                         <div class="data-field">
                             <div class="data-field-label">Friendly Name</div>
-                            <div class="data-field-value">${sp.friendlyName || 'N/A'}</div>
+                            <div class="data-field-value">${esc(sp.friendlyName) || 'N/A'}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Resource Group</div>
-                            <div class="data-field-value">${sp.resourceGroup}</div>
+                            <div class="data-field-value">${esc(sp.resourceGroup)}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Location</div>
-                            <div class="data-field-value">${sp.location}</div>
+                            <div class="data-field-value">${esc(sp.location)}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Time Zone</div>
-                            <div class="data-field-value">${sp.timeZone || 'N/A'}</div>
+                            <div class="data-field-value">${esc(sp.timeZone) || 'N/A'}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Exclusion Tag</div>
-                            <div class="data-field-value">${sp.exclusionTag || 'None'}</div>
+                            <div class="data-field-value">${esc(sp.exclusionTag) || 'None'}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Schedules</div>
@@ -728,8 +756,8 @@ function renderVNets() {
                                     <tbody>
                                         ${vnet.subnets.map(subnet => `
                                             <tr>
-                                                <td>${subnet.name}</td>
-                                                <td>${subnet.addressPrefix}</td>
+                                                <td>${esc(subnet.name)}</td>
+                                                <td>${esc(subnet.addressPrefix)}</td>
                                                 <td>${subnet.connectedDevices || 0}</td>
                                                 <td>${subnet.connectedSessionHosts || 0}</td>
                                             </tr>
@@ -759,9 +787,9 @@ function renderVNets() {
                                     <tbody>
                                         ${vnet.peerings.map(peer => `
                                             <tr>
-                                                <td>${peer.name}</td>
-                                                <td style="font-size: 0.8rem;">${peer.remoteVNet}</td>
-                                                <td><span class="badge ${peer.peeringState === 'Connected' ? 'badge-success' : 'badge-warning'}">${peer.peeringState}</span></td>
+                                                <td>${esc(peer.name)}</td>
+                                                <td style="font-size: 0.8rem;">${esc(peer.remoteVNet)}</td>
+                                                <td><span class="badge ${peer.peeringState === 'Connected' ? 'badge-success' : 'badge-warning'}">${esc(peer.peeringState)}</span></td>
                                                 <td>${peer.allowForwardedTraffic ? '✓' : '✗'}</td>
                                             </tr>
                                         `).join('')}
@@ -774,26 +802,26 @@ function renderVNets() {
                 
                 vnetDiv.innerHTML = `
                     <div class="data-item-header">
-                        <h3>${vnet.name}</h3>
+                        <h3>${esc(vnet.name)}</h3>
                         <span class="badge badge-success">AVD Network</span>
-                        ${vnet.connectedSessionHosts ? `<span class="badge badge-info">${vnet.connectedSessionHosts} Session Hosts</span>` : ''}
+                        ${vnet.connectedSessionHosts ? `<span class="badge badge-info">${esc(vnet.connectedSessionHosts)} Session Hosts</span>` : ''}
                     </div>
                     <div class="data-item-details">
                         <div class="data-field">
                             <div class="data-field-label">Resource Group</div>
-                            <div class="data-field-value">${vnet.resourceGroup}</div>
+                            <div class="data-field-value">${esc(vnet.resourceGroup)}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Location</div>
-                            <div class="data-field-value">${vnet.location}</div>
+                            <div class="data-field-value">${esc(vnet.location)}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Address Space</div>
-                            <div class="data-field-value">${vnet.addressSpace}</div>
+                            <div class="data-field-value">${esc(vnet.addressSpace)}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">DNS Servers</div>
-                            <div class="data-field-value">${vnet.dnsServers || 'Default (Azure-provided)'}</div>
+                            <div class="data-field-value">${esc(vnet.dnsServers) || 'Default (Azure-provided)'}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Subnets</div>
@@ -859,10 +887,10 @@ function renderComputeGalleries() {
                                                 <tbody>
                                                     ${image.versions.map(version => `
                                                         <tr>
-                                                            <td><strong>${version.name || 'N/A'}</strong></td>
-                                                            <td>${version.location || 'N/A'}</td>
-                                                            <td><span class="badge ${version.provisioningState === 'Succeeded' ? 'badge-success' : 'badge-warning'}">${version.provisioningState || 'Unknown'}</span></td>
-                                                            <td>${version.usedBy && version.usedBy.length > 0 ? version.usedBy.join(', ') : 'Not in use'}</td>
+                                                            <td><strong>${esc(version.name) || 'N/A'}</strong></td>
+                                                            <td>${esc(version.location) || 'N/A'}</td>
+                                                            <td><span class="badge ${version.provisioningState === 'Succeeded' ? 'badge-success' : 'badge-warning'}">${esc(version.provisioningState) || 'Unknown'}</span></td>
+                                                            <td>${version.usedBy && version.usedBy.length > 0 ? esc(version.usedBy.join(', ')) : 'Not in use'}</td>
                                                         </tr>
                                                     `).join('')}
                                                 </tbody>
@@ -874,17 +902,17 @@ function renderComputeGalleries() {
                                 return `
                                     <div style="margin-bottom: 1.5rem; padding: 1rem; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
                                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                                            <h4 style="margin: 0; color: var(--secondary-color);">🖼️ ${image.name}</h4>
-                                            <span class="badge badge-info">${image.osType || 'N/A'}</span>
+                                            <h4 style="margin: 0; color: var(--secondary-color);">🖼️ ${esc(image.name)}</h4>
+                                            <span class="badge badge-info">${esc(image.osType) || 'N/A'}</span>
                                         </div>
                                         <div class="data-item-details">
                                             <div class="data-field">
                                                 <div class="data-field-label">OS State</div>
-                                                <div class="data-field-value">${image.osState || 'N/A'}</div>
+                                                <div class="data-field-value">${esc(image.osState) || 'N/A'}</div>
                                             </div>
                                             <div class="data-field">
                                                 <div class="data-field-label">Hyper-V Generation</div>
-                                                <div class="data-field-value">${image.hyperVGeneration || 'N/A'}</div>
+                                                <div class="data-field-value">${esc(image.hyperVGeneration) || 'N/A'}</div>
                                             </div>
                                             <div class="data-field">
                                                 <div class="data-field-label">Versions</div>
@@ -892,7 +920,7 @@ function renderComputeGalleries() {
                                             </div>
                                             <div class="data-field">
                                                 <div class="data-field-label">Description</div>
-                                                <div class="data-field-value">${image.description || 'No description'}</div>
+                                                <div class="data-field-value">${esc(image.description) || 'No description'}</div>
                                             </div>
                                         </div>
                                         ${versionsHTML}
@@ -905,17 +933,17 @@ function renderComputeGalleries() {
                 
                 galleryDiv.innerHTML = `
                     <div class="data-item-header">
-                        <h3>${gallery.name}</h3>
-                        <span class="badge badge-success">${gallery.provisioningState || 'N/A'}</span>
+                        <h3>${esc(gallery.name)}</h3>
+                        <span class="badge badge-success">${esc(gallery.provisioningState) || 'N/A'}</span>
                     </div>
                     <div class="data-item-details">
                         <div class="data-field">
                             <div class="data-field-label">Resource Group</div>
-                            <div class="data-field-value">${gallery.resourceGroup}</div>
+                            <div class="data-field-value">${esc(gallery.resourceGroup)}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Location</div>
-                            <div class="data-field-value">${gallery.location}</div>
+                            <div class="data-field-value">${esc(gallery.location)}</div>
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Images</div>
@@ -923,7 +951,7 @@ function renderComputeGalleries() {
                         </div>
                         <div class="data-field">
                             <div class="data-field-label">Description</div>
-                            <div class="data-field-value">${gallery.description || 'No description'}</div>
+                            <div class="data-field-value">${esc(gallery.description) || 'No description'}</div>
                         </div>
                     </div>
                     ${imagesHTML}
@@ -985,7 +1013,7 @@ async function loadDiagram() {
             console.error('Error loading diagram:', diagramData.error);
             const diagramSection = document.getElementById('networkDiagram');
             if (diagramSection) {
-                diagramSection.innerHTML = `<div style="padding: 20px; text-align: center; color: #dc3545;">Error loading diagram: ${diagramData.error}</div>`;
+                diagramSection.innerHTML = `<div style="padding: 20px; text-align: center; color: #dc3545;">Error loading diagram: ${esc(diagramData.error)}</div>`;
             }
             return;
         }
@@ -1159,7 +1187,7 @@ function evaluateCondition(condition, data, allHostPools, allScalingPlans, allGa
                 }
                 return true;
             }).length;
-            return eval(`${count} ${value}`);
+            return compareNumeric(count, value);
             
         case 'contains':
             return fieldData.some(item => {
@@ -1198,7 +1226,7 @@ function evaluateCondition(condition, data, allHostPools, allScalingPlans, allGa
             
         case 'uniqueCount':
             const uniqueValues = new Set(fieldData.map(item => item[matchField]));
-            return eval(`${uniqueValues.size} ${value}`);
+            return compareNumeric(uniqueValues.size, value);
             
         default:
             return false;
@@ -3235,16 +3263,16 @@ function displayWAFConfig() {
     
     let html = '<div class="waf-config-display">';
     html += `<div class="config-header">
-        <h3>Configuration Version: ${wafConfig.version}</h3>
-        <p>${wafConfig.description}</p>
+        <h3>Configuration Version: ${esc(wafConfig.version)}</h3>
+        <p>${esc(wafConfig.description)}</p>
     </div>`;
     
     // Display each pillar
     for (const [pillarKey, pillar] of Object.entries(wafConfig.pillars)) {
         html += `<div class="config-pillar" style="margin-top: 2rem; padding: 1.5rem; background: rgba(255,255,255,0.05); border-radius: 8px;">`;
-        html += `<h3 style="color: var(--primary-color); margin-bottom: 0.5rem;">${pillar.name}</h3>`;
-        html += `<p class="text-secondary" style="margin-bottom: 1rem;">${pillar.description}</p>`;
-        html += `<p><strong>Maximum Checks:</strong> ${pillar.maxChecks}</p>`;
+        html += `<h3 style="color: var(--primary-color); margin-bottom: 0.5rem;">${esc(pillar.name)}</h3>`;
+        html += `<p class="text-secondary" style="margin-bottom: 1rem;">${esc(pillar.description)}</p>`;
+        html += `<p><strong>Maximum Checks:</strong> ${esc(pillar.maxChecks)}</p>`;
         html += `<p><strong>Total Rules:</strong> ${pillar.rules.length}</p>`;
         
         // Display rules
@@ -3253,33 +3281,33 @@ function displayWAFConfig() {
             html += `<div class="rule-item" style="margin-top: 1rem; padding: 1rem; background: rgba(0,0,0,0.3); border-left: 3px solid var(--primary-color); border-radius: 4px;">`;
             html += `<div style="display: flex; justify-content: space-between; align-items: start;">`;
             html += `<div>`;
-            html += `<h4 style="margin: 0 0 0.5rem 0;">${rule.id}: ${rule.name}</h4>`;
-            html += `<p class="text-secondary" style="font-size: 0.9rem; margin-bottom: 0.5rem;">${rule.description}</p>`;
+            html += `<h4 style="margin: 0 0 0.5rem 0;">${esc(rule.id)}: ${esc(rule.name)}</h4>`;
+            html += `<p class="text-secondary" style="font-size: 0.9rem; margin-bottom: 0.5rem;">${esc(rule.description)}</p>`;
             html += `</div>`;
-            html += `<span class="badge" style="background: var(--accent-color); color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">${rule.points} pts</span>`;
+            html += `<span class="badge" style="background: var(--accent-color); color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">${esc(rule.points)} pts</span>`;
             html += `</div>`;
             
             // Show condition or calculation
             if (rule.condition) {
                 html += `<div style="margin-top: 0.5rem; font-family: monospace; font-size: 0.85rem; color: #a0aec0;">`;
-                html += `<strong>Condition:</strong> ${rule.condition.field} ${rule.condition.operator} ${JSON.stringify(rule.condition.value)}`;
+                html += `<strong>Condition:</strong> ${esc(rule.condition.field)} ${esc(rule.condition.operator)} ${esc(JSON.stringify(rule.condition.value))}`;
                 html += `</div>`;
             }
             if (rule.calculation) {
                 html += `<div style="margin-top: 0.5rem; font-family: monospace; font-size: 0.85rem; color: #a0aec0;">`;
-                html += `<strong>Calculation:</strong> ${rule.calculation}`;
+                html += `<strong>Calculation:</strong> ${esc(rule.calculation)}`;
                 html += `</div>`;
             }
             
             // Show messages
             if (rule.successMessage) {
-                html += `<div style="margin-top: 0.5rem; font-size: 0.85rem; color: #10b981;">✓ ${rule.successMessage}</div>`;
+                html += `<div style="margin-top: 0.5rem; font-size: 0.85rem; color: #10b981;">✓ ${esc(rule.successMessage)}</div>`;
             }
             if (rule.warningMessage) {
-                html += `<div style="margin-top: 0.5rem; font-size: 0.85rem; color: #f59e0b;">⚠ ${rule.warningMessage}</div>`;
+                html += `<div style="margin-top: 0.5rem; font-size: 0.85rem; color: #f59e0b;">⚠ ${esc(rule.warningMessage)}</div>`;
             }
             if (rule.recommendation) {
-                html += `<div style="margin-top: 0.5rem; font-size: 0.85rem; color: #60a5fa;"><strong>Recommendation:</strong> ${rule.recommendation}</div>`;
+                html += `<div style="margin-top: 0.5rem; font-size: 0.85rem; color: #60a5fa;"><strong>Recommendation:</strong> ${esc(rule.recommendation)}</div>`;
             }
             
             html += `</div>`;
@@ -3294,8 +3322,8 @@ function displayWAFConfig() {
     html += `<h3 style="color: var(--primary-color); margin-bottom: 1rem;">Status Thresholds</h3>`;
     for (const [status, config] of Object.entries(wafConfig.statusMapping)) {
         html += `<div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem;">`;
-        html += `<div style="width: 20px; height: 20px; background: ${config.color}; border-radius: 4px;"></div>`;
-        html += `<span><strong>${status}:</strong> ${config.threshold}% and above</span>`;
+        html += `<div style="width: 20px; height: 20px; background: ${esc(config.color)}; border-radius: 4px;"></div>`;
+        html += `<span><strong>${esc(status)}:</strong> ${esc(config.threshold)}% and above</span>`;
         html += `</div>`;
     }
     html += `</div>`;

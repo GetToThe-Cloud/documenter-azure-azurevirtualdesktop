@@ -1,7 +1,7 @@
 @{
     # Module metadata
     RootModule        = 'documenter-azure-azurevirtualdesktop.psm1'
-    ModuleVersion     = '1.2.223'
+    ModuleVersion     = '1.2.224'
     GUID              = 'b5e91f3c-2a7d-4e08-bc4f-1d6a83f0e2c9'
     Author            = 'Alex ter Neuzen'
     CompanyName       = 'GetToTheCloud'

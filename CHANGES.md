@@ -1,6 +1,16 @@
 # Azure Virtual Desktop Inventory - Change Summary
 
-## Latest Update: 2026-04-01 (v1.2.223)
+## Latest Update: 2026-08-06 (v1.2.224)
+
+### Security Fixes (Module Version 1.2.224)
+
+- **XSS hardening**: added `escapeHtml`/`esc` helper; all Azure-sourced values (resource names, IDs, descriptions, error messages, account/subscription names, WAF config text) are now HTML-escaped before insertion via `innerHTML`
+- **Removed `eval()`**: WAF check conditions (`count`/`uniqueCount` operators) now use a strict `compareNumeric` parser that only accepts `<operator> <number>` expressions
+- **Subresource Integrity**: all CDN `<script>`/`<link>` tags in `index.html` now carry `integrity` (sha384) and `crossorigin="anonymous"` attributes
+
+---
+
+## Previous: 2026-04-01 (v1.2.223)
 
 ### Module Version 1.2.223
 
