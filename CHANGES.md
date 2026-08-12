@@ -1,21 +1,14 @@
 # Azure Virtual Desktop Inventory - Change Summary
 
-## Latest Update: 2026-08-12 (v1.2.231)
+## Latest Update: 2026-08-12 (v1.2.230)
 
-### PDF and Scaling Report Improvements
+### Consolidated Updates
 
 - **Dynamic scaling values**: fixed nested create/delete schedule settings so VM limit `20` and host-pool minimum/maximum values such as `5` and `10` reach both the dashboard and PDF export.
 - **Scaling compatibility**: when the installed Az model omits extended schedule fields, the collector falls back to the ARM scaling-plan resource and normalizes both REST and legacy schedule time formats.
 - **Session-host configuration profiles**: added the complete profile inventory to the PDF, including deployment, image, disk, network, domain-join, security, diagnostics, custom-script, and URI-only Key Vault metadata.
 - **Report styling**: added the GetToTheCloud wordmark, branded navy/azure/paper styling, branded cover, interior page headers, responsive page numbers, and improved table defaults.
 - **Logo delivery**: the PowerShell HttpListener now serves the packaged WebP wordmark as binary data for reliable PDF branding.
-
----
-
-## Previous Update: 2026-08-12 (v1.2.230)
-
-### Consolidated Updates
-
 - **XSS hardening**: added `escapeHtml`/`esc` helper; Azure-sourced values are HTML-escaped before insertion via `innerHTML`.
 - **Removed `eval()`**: WAF conditions now use a strict numeric comparison parser.
 - **Subresource Integrity**: CDN assets in `index.html` carry `integrity` and `crossorigin="anonymous"` attributes.
