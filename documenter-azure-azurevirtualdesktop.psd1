@@ -1,7 +1,7 @@
 @{
     # Module metadata
     RootModule        = 'documenter-azure-azurevirtualdesktop.psm1'
-    ModuleVersion     = '1.2.231'
+    ModuleVersion     = '1.2.230'
     GUID              = 'b5e91f3c-2a7d-4e08-bc4f-1d6a83f0e2c9'
     Author            = 'Alex ter Neuzen'
     CompanyName       = 'GetToTheCloud'
@@ -64,14 +64,13 @@
             ProjectUri   = 'https://github.com/GetToThe-Cloud/documenter-azure-azurevirtualdesktop'
             IconUri      = ''
             ReleaseNotes = @'
-            v1.2.231
+            v1.2.230
               - Fixed dynamic scaling exports when VM limits and host-pool minimum/maximum sizes are nested in create/delete schedule settings
               - Added an ARM scaling-plan fallback for Az models that omit extended schedule fields and normalized REST and legacy schedule times
               - Added session-host configuration profile details to the PDF, including URI-only Key Vault references
               - Added the GetToTheCloud wordmark and branded navy/azure report styling with responsive headers and footers
               - Served the packaged WebP wordmark as binary data from the PowerShell HttpListener for reliable PDF branding
-
-            v1.2.230
+              - Increased spacing below report subsection dividers so rules no longer overlap headings, bullets, or WAF score text
               - Consolidated security hardening, including XSS escaping, strict WAF condition parsing, and CDN SRI attributes
               - Added subscription scope selection, validation, permission visibility, and interactive browser login
               - Added reliable asynchronous Ctrl+C shutdown for the PowerShell HttpListener and direct foreground execution from start.sh
