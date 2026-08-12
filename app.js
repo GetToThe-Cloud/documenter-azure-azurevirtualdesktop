@@ -1,11 +1,14 @@
 // Azure Virtual Desktop Inventory - Client Application
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.231';
 console.log(`🚀 AVD Inventory app.js loaded - Version ${APP_VERSION}`);
 
 let inventoryData = null;
 let diagramData = null;
 let network = null;
+let availableSubscriptions = [];
+let selectedSubscriptionIds = [];
+let subscriptionScopeError = null;
 
 // Escape untrusted values (Azure resource names etc.) before inserting into HTML
 function escapeHtml(value) {
@@ -18,6 +21,54 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 const esc = escapeHtml;
+
+function readScalingValue(source, names) {
+    if (!source) return null;
+    for (const name of names) {
+        if (source[name] !== undefined && source[name] !== null) return source[name];
+    }
+    return null;
+}
+
+function getScalingScheduleSettings(schedule) {
+    const createDelete = readScalingValue(schedule, ['createDelete', 'CreateDelete']);
+    const readScheduleSetting = (names) => {
+        const nestedValue = readScalingValue(createDelete, names);
+        return nestedValue === null ? readScalingValue(schedule, names) : nestedValue;
+    };
+    const minimumHostPoolSizeNames = [
+        'rampUpMinimumHostPoolSize', 'RampUpMinimumHostPoolSize',
+        'minimumHostPoolSize', 'MinimumHostPoolSize',
+        'minHostPoolSize', 'MinHostPoolSize'
+    ];
+    const maximumHostPoolSizeNames = [
+        'rampUpMaximumHostPoolSize', 'RampUpMaximumHostPoolSize',
+        'maximumHostPoolSize', 'MaximumHostPoolSize',
+        'maxHostPoolSize', 'MaxHostPoolSize'
+    ];
+
+    return {
+        scalingMethod: readScalingValue(schedule, ['scalingMethod', 'ScalingMethod']),
+        virtualMachineLimit: readScheduleSetting([
+            'virtualMachineLimit', 'VirtualMachineLimit', 'vmLimit', 'VmLimit',
+            'maximumVirtualMachineLimit', 'MaximumVirtualMachineLimit'
+        ]),
+        rampUpMinimumHostPoolSize: readScheduleSetting(minimumHostPoolSizeNames),
+        rampUpMaximumHostPoolSize: readScheduleSetting(maximumHostPoolSizeNames),
+        rampDownMinimumHostPoolSize: readScheduleSetting([
+            'rampDownMinimumHostPoolSize', 'RampDownMinimumHostPoolSize',
+            ...minimumHostPoolSizeNames
+        ]),
+        rampDownMaximumHostPoolSize: readScheduleSetting([
+            'rampDownMaximumHostPoolSize', 'RampDownMaximumHostPoolSize',
+            ...maximumHostPoolSizeNames
+        ]),
+        rampUpMinimumHostsPct: readScalingValue(schedule, ['rampUpMinimumHostsPct', 'RampUpMinimumHostsPct']),
+        rampDownMinimumHostsPct: readScalingValue(schedule, ['rampDownMinimumHostsPct', 'RampDownMinimumHostsPct']),
+        rampUpCapacityThresholdPct: readScalingValue(schedule, ['rampUpCapacityThresholdPct', 'RampUpCapacityThresholdPct']),
+        rampDownCapacityThresholdPct: readScalingValue(schedule, ['rampDownCapacityThresholdPct', 'RampDownCapacityThresholdPct'])
+    };
+}
 
 // Safely evaluate numeric comparison expressions like "> 0" or ">= 2" (replaces eval)
 function compareNumeric(left, expression) {
@@ -72,6 +123,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (versionElement) {
         versionElement.textContent = `Version: ${APP_VERSION}`;
     }
+    initializeSubscriptionControls();
     checkAuthStatus();
     // Auto-refresh disabled - use manual refresh button to reload inventory
 });
@@ -93,6 +145,7 @@ async function checkAuthStatus() {
             authStatusDiv.innerHTML = `✓ Connected to Azure as <strong>${esc(data.context.account)}</strong> | Subscription: <strong>${esc(data.context.subscription)}</strong>`;
             
             document.getElementById('authRequired').style.display = 'none';
+            await loadSubscriptionScope();
             await loadInventoryData();
         } else {
             console.log('⚠️ Not authenticated - requesting login');
@@ -110,6 +163,137 @@ async function checkAuthStatus() {
     }
 }
 
+function initializeSubscriptionControls() {
+    document.getElementById('selectAllSubscriptionsBtn')?.addEventListener('click', () => {
+        selectedSubscriptionIds = availableSubscriptions
+            .filter(subscription => subscription.scanEligible !== false)
+            .map(subscription => subscription.id);
+        renderSubscriptionSelector();
+    });
+
+    document.getElementById('clearSubscriptionsBtn')?.addEventListener('click', () => {
+        selectedSubscriptionIds = [];
+        renderSubscriptionSelector();
+    });
+
+    document.getElementById('scanSelectedSubscriptionsBtn')?.addEventListener('click', async () => {
+        if (selectedSubscriptionIds.length === 0) {
+            alert('Select at least one subscription before scanning.');
+            return;
+        }
+
+        diagramData = null;
+        await loadInventoryData();
+    });
+}
+
+async function loadSubscriptionScope() {
+    try {
+        const response = await fetch('/api/subscriptions');
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        availableSubscriptions = Array.isArray(data.subscriptions) ? data.subscriptions : [];
+        selectedSubscriptionIds = availableSubscriptions
+            .filter(subscription => subscription.scanEligible !== false)
+            .map(subscription => subscription.id);
+        subscriptionScopeError = null;
+        renderSubscriptionSelector();
+        return true;
+    }
+    catch (error) {
+        console.error('❌ Error discovering subscriptions:', error);
+        availableSubscriptions = [];
+        selectedSubscriptionIds = [];
+        subscriptionScopeError = 'Subscription discovery failed. The inventory request will use all enabled subscriptions.';
+        renderSubscriptionSelector();
+        return false;
+    }
+}
+
+function renderSubscriptionSelector() {
+    const scope = document.getElementById('subscriptionScope');
+    const list = document.getElementById('subscriptionSelectorList');
+    if (!scope || !list) return;
+
+    scope.style.display = 'block';
+    list.replaceChildren();
+
+    if (subscriptionScopeError) {
+        const error = document.createElement('p');
+        error.className = 'subscription-scope-error';
+        error.textContent = subscriptionScopeError;
+        list.appendChild(error);
+        updateSubscriptionSelectionStatus();
+        return;
+    }
+
+    if (availableSubscriptions.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'subscription-scope-error';
+        empty.textContent = 'No enabled Azure subscriptions are available for this account.';
+        list.appendChild(empty);
+        updateSubscriptionSelectionStatus();
+        return;
+    }
+
+    availableSubscriptions.forEach(subscription => {
+        const row = document.createElement('label');
+        row.className = 'subscription-selector-row';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'subscription-checkbox';
+        checkbox.value = subscription.id;
+        checkbox.checked = selectedSubscriptionIds.includes(subscription.id);
+        checkbox.disabled = subscription.scanEligible === false;
+        checkbox.addEventListener('change', () => {
+            selectedSubscriptionIds = Array.from(document.querySelectorAll('.subscription-checkbox:checked'))
+                .map(input => input.value);
+            updateSubscriptionSelectionStatus();
+        });
+
+        const details = document.createElement('span');
+        details.className = 'subscription-selector-details';
+
+        const name = document.createElement('strong');
+        name.textContent = subscription.name || subscription.id || 'Unnamed subscription';
+        details.appendChild(name);
+
+        const metadata = document.createElement('span');
+        metadata.className = 'subscription-selector-metadata';
+        const state = subscription.state || 'Unknown state';
+        const access = subscription.scanEligible === false ? 'Unavailable for scanning' : state;
+        metadata.textContent = `${access} | ${subscription.tenantId || 'Unknown tenant'}`;
+        details.appendChild(metadata);
+
+        row.appendChild(checkbox);
+        row.appendChild(details);
+        list.appendChild(row);
+    });
+
+    updateSubscriptionSelectionStatus();
+}
+
+function updateSubscriptionSelectionStatus() {
+    const status = document.getElementById('subscriptionSelectionStatus');
+    const selectAllButton = document.getElementById('selectAllSubscriptionsBtn');
+    const clearButton = document.getElementById('clearSubscriptionsBtn');
+    const scanButton = document.getElementById('scanSelectedSubscriptionsBtn');
+    const eligibleCount = availableSubscriptions.filter(subscription => subscription.scanEligible !== false).length;
+
+    if (status) {
+        status.textContent = subscriptionScopeError
+            ? subscriptionScopeError
+            : `${selectedSubscriptionIds.length} of ${eligibleCount} subscriptions selected`;
+    }
+    if (selectAllButton) selectAllButton.disabled = eligibleCount === 0;
+    if (clearButton) clearButton.disabled = selectedSubscriptionIds.length === 0;
+    if (scanButton) scanButton.disabled = selectedSubscriptionIds.length === 0;
+}
+
 // Request Azure login (with rate limiting to prevent multiple simultaneous requests)
 let loginInProgress = false;
 async function requestAzureLogin() {
@@ -122,7 +306,7 @@ async function requestAzureLogin() {
     const authStatusDiv = document.getElementById('authStatus');
     
     try {
-        authStatusDiv.innerHTML = '🔐 Requesting Azure login... Please check your browser or terminal for authentication instructions.';
+        authStatusDiv.innerHTML = '🔐 Opening Azure sign-in in your browser... Complete the sign-in there to continue.';
         
         const response = await fetch('/api/auth/login', { method: 'POST' });
         const data = await response.json();
@@ -160,7 +344,13 @@ async function loadInventoryData() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minute timeout
         
+        const requestBody = selectedSubscriptionIds.length > 0
+            ? { subscriptionIds: [...selectedSubscriptionIds] }
+            : {};
         const response = await fetch('/api/inventory/data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
             signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -199,6 +389,7 @@ async function loadInventoryData() {
                 if (expl.overview) document.getElementById('overviewExplanation').textContent = expl.overview;
                 if (expl.hostPools) document.getElementById('hostPoolsExplanation').textContent = expl.hostPools;
                 if (expl.sessionHosts) document.getElementById('sessionHostsExplanation').textContent = expl.sessionHosts;
+                if (expl.sessionHostConfigurations) document.getElementById('sessionHostConfigurationsExplanation').textContent = expl.sessionHostConfigurations;
                 if (expl.scalingPlans) document.getElementById('scalingPlansExplanation').textContent = expl.scalingPlans;
                 if (expl.virtualNetworks) document.getElementById('vnetsExplanation').textContent = expl.virtualNetworks;
                 if (expl.computeGalleries) document.getElementById('galleriesExplanation').textContent = expl.computeGalleries;
@@ -210,6 +401,7 @@ async function loadInventoryData() {
         console.log('🎨 Rendering UI components...');
         try { renderOverview(); } catch (e) { console.error('❌ Error rendering overview:', e); }
         try { renderHostPools(); } catch (e) { console.error('❌ Error rendering host pools:', e); }
+        try { renderSessionHostConfigurations(); } catch (e) { console.error('❌ Error rendering session-host configurations:', e); }
         try { renderSessionHosts(); } catch (e) { console.error('❌ Error rendering session hosts:', e); }
         try { renderWorkspaces(); } catch (e) { console.error('❌ Error rendering workspaces:', e); }
         try { renderApplicationGroups(); } catch (e) { console.error('❌ Error rendering application groups:', e); }
@@ -240,7 +432,14 @@ async function refreshInventory() {
         showLoading('Refreshing inventory...');
         updateLoadingProgress('Requesting fresh data from Azure...', 30);
         
-        const response = await fetch('/api/inventory/refresh', { method: 'POST' });
+        const requestBody = selectedSubscriptionIds.length > 0
+            ? { subscriptionIds: [...selectedSubscriptionIds] }
+            : {};
+        const response = await fetch('/api/inventory/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
         const data = await response.json();
         
         console.log('📥 Refresh response:', data);
@@ -298,11 +497,17 @@ function renderOverview() {
     inventoryData.subscriptions.forEach(sub => {
         const subDiv = document.createElement('div');
         subDiv.className = 'subscription-section';
+        const scanStatus = sub.scanStatus || 'scanned';
+        const scanStatusClass = scanStatus === 'skipped' ? 'badge-warning' : 'badge-success';
         subDiv.innerHTML = `
             <div class="subscription-header">
                 <h3>${esc(sub.name)}</h3>
                 <div style="font-size: 0.9rem; margin-top: 0.5rem; opacity: 0.9;">
                     ID: ${esc(sub.id)}
+                </div>
+                <div class="subscription-scan-status">
+                    <span class="badge ${scanStatusClass}">${esc(scanStatus)}</span>
+                    ${sub.scanError ? `<span>${esc(sub.scanError)}</span>` : ''}
                 </div>
             </div>
             <div class="subscription-content">
@@ -404,6 +609,109 @@ function renderHostPools() {
     
     if (hpCount === 0) {
         container.innerHTML = '<p style="color: var(--text-secondary);">No host pools found.</p>';
+    }
+}
+
+function renderSessionHostConfigurations() {
+    if (!inventoryData) return;
+
+    const container = document.getElementById('sessionHostConfigurationsList');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const formatProfileValue = (value) => {
+        if (value === null || value === undefined || value === '') return 'N/A';
+        if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'N/A';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
+    };
+    const profileField = (label, value) => `
+        <div class="data-field">
+            <div class="data-field-label">${esc(label)}</div>
+            <div class="data-field-value">${esc(formatProfileValue(value))}</div>
+        </div>
+    `;
+
+    let profileCount = 0;
+    inventoryData.subscriptions.forEach(sub => {
+        sub.hostPools.forEach(hp => {
+            const profile = hp.sessionHostConfiguration;
+            if (!profile) return;
+
+            profileCount++;
+            const status = profile.status || 'unavailable';
+            const statusClass = status === 'configured' ? 'badge-success' : status === 'notConfigured' ? 'badge-warning' : 'badge-danger';
+            const statusLabel = status === 'configured' ? 'Configured' : status === 'notConfigured' ? 'Not configured' : 'Unavailable';
+            const marketplace = profile.marketplaceImage || profile.image?.marketplace || {};
+            const marketplaceImage = [marketplace.publisher, marketplace.offer, marketplace.sku, marketplace.version]
+                .filter(value => value !== null && value !== undefined && value !== '')
+                .join(' / ');
+            const keyVaultReferences = Array.isArray(profile.keyVaultReferences) ? profile.keyVaultReferences : [];
+            const keyVaultMarkup = keyVaultReferences.length > 0
+                ? keyVaultReferences.map(item => `
+                    <div class="data-field">
+                        <div class="data-field-label">${esc(item.purpose || 'Credential')}</div>
+                        <div class="data-field-value">${esc(item.reference?.keyVaultUri || 'N/A')}</div>
+                    </div>
+                `).join('')
+                : '<p style="color: var(--text-secondary);">No Key Vault references reported.</p>';
+
+            const profileDiv = document.createElement('div');
+            profileDiv.className = 'data-item';
+            profileDiv.innerHTML = `
+                <div class="data-item-header">
+                    <div>
+                        <h3>${esc(hp.name)}</h3>
+                        <div style="color: var(--text-secondary); font-size: 0.85rem;">Subscription: ${esc(sub.name)}</div>
+                    </div>
+                    <span class="badge ${statusClass}">${statusLabel}</span>
+                </div>
+                <div class="data-item-details">
+                    ${profileField('Profile Name', profile.name)}
+                    ${profileField('Friendly Name', profile.friendlyName)}
+                    ${profileField('Provisioning State', profile.provisioningState)}
+                    ${profileField('Profile Version', profile.version)}
+                    ${profileField('Source', profile.source)}
+                    ${profileField('VM Location', profile.vmLocation)}
+                    ${profileField('VM Resource Group', profile.vmResourceGroup)}
+                    ${profileField('VM Name Prefix', profile.vmNamePrefix)}
+                    ${profileField('VM Size', profile.vmSize)}
+                    ${profileField('Availability Zones', profile.availabilityZones)}
+                    ${profileField('VM Tags', profile.vmTags)}
+                    ${profileField('Image Type', profile.imageType || profile.image?.type)}
+                    ${profileField('Marketplace Image', marketplaceImage)}
+                    ${profileField('Custom Image ID', profile.customImageId || profile.image?.customImageId)}
+                    ${profileField('Managed Disk Type', profile.disk?.managedDiskType)}
+                    ${profileField('Ephemeral Disk', profile.disk?.ephemeral)}
+                    ${profileField('Subnet ID', profile.network?.subnetId)}
+                    ${profileField('Network Security Group', profile.network?.networkSecurityGroupId)}
+                    ${profileField('Domain Join Type', profile.domainJoin?.type)}
+                    ${profileField('Domain Name', profile.domainJoin?.domainName)}
+                    ${profileField('Organizational Unit', profile.domainJoin?.organizationalUnitPath)}
+                    ${profileField('MDM Provider GUID', profile.domainJoin?.mdmProviderGuid)}
+                    ${profileField('Security Type', profile.security?.type)}
+                    ${profileField('Secure Boot', profile.security?.secureBoot)}
+                    ${profileField('vTPM', profile.security?.vTpm)}
+                    ${profileField('Boot Diagnostics', profile.bootDiagnostics)}
+                    ${profileField('Custom Configuration Script', profile.customConfigurationScriptUrl)}
+                    ${profileField('Resource ID', profile.id)}
+                    ${profileField('Resource Type', profile.type)}
+                </div>
+                <h4 style="margin: 1.5rem 0 0.75rem; color: var(--secondary-color);">Key Vault credential references</h4>
+                <div class="data-item-details">
+                    ${keyVaultMarkup}
+                </div>
+                <p style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.85rem;">
+                    Secret values are never retrieved or included in the inventory. Only Key Vault secret URIs are recorded.
+                </p>
+                ${profile.error ? `<p style="margin-top: 1rem; color: var(--warning-color);">${esc(profile.error)}</p>` : ''}
+            `;
+            container.appendChild(profileDiv);
+        });
+    });
+
+    if (profileCount === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary);">No session-host configuration profiles found.</p>';
     }
 }
 
@@ -661,6 +969,74 @@ function renderScalingPlans() {
                         </div>
                     `;
                 }
+
+                let scheduleSettingsHTML = '';
+                if (sp.schedules && sp.schedules.length > 0) {
+                    const displayScalingValue = (value, suffix = '') => value === null || value === undefined || value === ''
+                        ? 'N/A'
+                        : `${esc(value)}${suffix}`;
+                    const settingsRows = sp.schedules.map(schedule => {
+                        const scalingSettings = getScalingScheduleSettings(schedule);
+                        const scheduleName = esc(schedule.name) || 'Unnamed schedule';
+                        const vmLimitRow = scalingSettings.virtualMachineLimit === null ? '' : `
+                            <tr>
+                                <td>${scheduleName}</td>
+                                <td>Virtual machine limit</td>
+                                <td colspan="2">${displayScalingValue(scalingSettings.virtualMachineLimit)}</td>
+                            </tr>
+                        `;
+
+                        return `${vmLimitRow}
+                            <tr>
+                                <td>${scheduleName}</td>
+                                <td>Scaling method</td>
+                                <td colspan="2">${displayScalingValue(scalingSettings.scalingMethod)}</td>
+                            </tr>
+                            <tr>
+                                <td>${scheduleName}</td>
+                                <td>Minimum host pool size</td>
+                                <td>${displayScalingValue(scalingSettings.rampUpMinimumHostPoolSize)}</td>
+                                <td>${displayScalingValue(scalingSettings.rampDownMinimumHostPoolSize)}</td>
+                            </tr>
+                            <tr>
+                                <td>${scheduleName}</td>
+                                <td>Maximum host pool size / VM limit</td>
+                                <td>${displayScalingValue(scalingSettings.rampUpMaximumHostPoolSize)}</td>
+                                <td>${displayScalingValue(scalingSettings.rampDownMaximumHostPoolSize)}</td>
+                            </tr>
+                            <tr>
+                                <td>${scheduleName}</td>
+                                <td>Minimum hosts</td>
+                                <td>${displayScalingValue(scalingSettings.rampUpMinimumHostsPct, '%')}</td>
+                                <td>${displayScalingValue(scalingSettings.rampDownMinimumHostsPct, '%')}</td>
+                            </tr>
+                            <tr>
+                                <td>${scheduleName}</td>
+                                <td>Capacity threshold</td>
+                                <td>${displayScalingValue(scalingSettings.rampUpCapacityThresholdPct, '%')}</td>
+                                <td>${displayScalingValue(scalingSettings.rampDownCapacityThresholdPct, '%')}</td>
+                            </tr>`;
+                    }).join('');
+
+                    scheduleSettingsHTML = `
+                        <div style="margin-top: 1rem;">
+                            <div class="data-field-label">Dynamic Scaling Settings</div>
+                            <div class="table-container" style="margin-top: 0.5rem;">
+                                <table style="font-size: 0.85rem;">
+                                    <thead>
+                                        <tr>
+                                            <th>Schedule</th>
+                                            <th>Setting</th>
+                                            <th>Ramp Up</th>
+                                            <th>Ramp Down</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>${settingsRows}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    `;
+                }
                 
                 let hostPoolRefsHTML = '';
                 if (sp.hostPoolReferences && sp.hostPoolReferences.length > 0) {
@@ -711,6 +1087,7 @@ function renderScalingPlans() {
                         </div>
                     </div>
                     ${schedulesHTML}
+                    ${scheduleSettingsHTML}
                     ${hostPoolRefsHTML}
                 `;
                 container.appendChild(spDiv);
@@ -995,7 +1372,14 @@ function showSection(sectionId) {
 async function loadDiagram() {
     try {
         showLoading();
-        const response = await fetch('/api/diagram/connections');
+        const requestBody = selectedSubscriptionIds.length > 0
+            ? { subscriptionIds: [...selectedSubscriptionIds] }
+            : {};
+        const response = await fetch('/api/diagram/connections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
         
         if (response.status === 401) {
             console.log('Not authenticated for diagram. Skipping diagram load.');
@@ -1926,6 +2310,73 @@ async function exportToPDF() {
         
         const { jsPDF } = window.jspdf;
         const pdf = new jsPDF('p', 'mm', 'a4');
+        const brandColors = {
+            navy: [14, 42, 71],
+            navyMedium: [32, 68, 111],
+            azure: [31, 143, 255],
+            azureDark: [11, 95, 216],
+            paperTint: [246, 248, 251],
+            divider: [228, 234, 241],
+            muted: [91, 114, 144]
+        };
+
+        pdf.setProperties({
+            title: 'Azure Virtual Desktop Assessment Report',
+            subject: 'Azure Virtual Desktop inventory and Well-Architected assessment',
+            author: 'GetToTheCloud',
+            creator: 'Azure Virtual Desktop Documenter'
+        });
+
+        if (typeof pdf.autoTableSetDefaults === 'function') {
+            pdf.autoTableSetDefaults({
+                tableWidth: 'wrap',
+                styles: {
+                    font: 'helvetica',
+                    textColor: brandColors.navy,
+                    lineColor: brandColors.divider,
+                    lineWidth: 0.1,
+                    cellPadding: 2.4,
+                    overflow: 'linebreak'
+                },
+                headStyles: {
+                    fillColor: brandColors.navy,
+                    textColor: [255, 255, 255],
+                    fontStyle: 'bold'
+                },
+                alternateRowStyles: {
+                    fillColor: brandColors.paperTint
+                }
+            });
+        }
+
+        async function loadReportLogo() {
+            try {
+                const response = await fetch('gettothecloud-logo.webp', { cache: 'force-cache' });
+                if (!response.ok) return null;
+                const logoBlob = await response.blob();
+                const objectUrl = URL.createObjectURL(logoBlob);
+                try {
+                    const logoImage = await new Promise((resolve, reject) => {
+                        const image = new Image();
+                        image.onload = () => resolve(image);
+                        image.onerror = reject;
+                        image.src = objectUrl;
+                    });
+                    const canvas = document.createElement('canvas');
+                    canvas.width = logoImage.naturalWidth;
+                    canvas.height = logoImage.naturalHeight;
+                    canvas.getContext('2d').drawImage(logoImage, 0, 0);
+                    return canvas.toDataURL('image/png');
+                } finally {
+                    URL.revokeObjectURL(objectUrl);
+                }
+            } catch (error) {
+                console.warn('Report logo could not be loaded:', error);
+                return null;
+            }
+        }
+
+        const logoImage = await loadReportLogo();
         
         const margin = 15;
         const pageHeight = 297;
@@ -1977,9 +2428,12 @@ async function exportToPDF() {
             }
             pdf.setFontSize(11);
             pdf.setFont(undefined, 'bold');
-            pdf.setTextColor(41, 128, 185);
+            pdf.setTextColor(...brandColors.navyMedium);
             pdf.text(title, margin, yPos);
-            yPos += 7;
+            yPos += 10;
+            pdf.setDrawColor(...brandColors.azure);
+            pdf.setLineWidth(0.45);
+            pdf.line(margin, yPos - 4, pageWidth - margin, yPos - 4);
             pdf.setTextColor(0, 0, 0);
         }
         
@@ -2031,23 +2485,36 @@ async function exportToPDF() {
         const diagramImage = await captureArchitectureDiagram();
         
         // === COVER PAGE ===
+        pdf.setFillColor(...brandColors.paperTint);
+        pdf.rect(0, 0, pageWidth, pageHeight, 'F');
+        pdf.setFillColor(...brandColors.navy);
+        pdf.rect(0, 0, pageWidth, 4, 'F');
+        pdf.setFillColor(...brandColors.azure);
+        pdf.rect(0, 4, pageWidth, 1.5, 'F');
+
+        if (logoImage) {
+            pdf.addImage(logoImage, 'PNG', margin, 16, 100, 20.5);
+        }
+
+        yPos = 70;
         pdf.setFontSize(24);
         pdf.setFont(undefined, 'bold');
-        pdf.setTextColor(0, 120, 212);
+        pdf.setTextColor(...brandColors.navy);
         pdf.text('Azure Virtual Desktop', margin, yPos);
         yPos += 10;
+        pdf.setTextColor(...brandColors.azureDark);
         pdf.text('Assessment Report', margin, yPos);
         yPos += 15;
         
         pdf.setFontSize(12);
-        pdf.setTextColor(0, 0, 0);
+        pdf.setTextColor(...brandColors.navyMedium);
         pdf.setFont(undefined, 'normal');
         pdf.text(`Generated: ${new Date().toLocaleString()}`, margin, yPos);
         yPos += 7;
         pdf.setFontSize(10);
-        pdf.setTextColor(100, 100, 100);
+        pdf.setTextColor(...brandColors.muted);
         pdf.text(`Report Version: ${APP_VERSION}`, margin, yPos);
-        pdf.setTextColor(0, 0, 0);
+        pdf.setTextColor(...brandColors.navy);
         pdf.setFontSize(12);
         yPos += 10;
         
@@ -2065,7 +2532,7 @@ async function exportToPDF() {
         pdf.addPage();
         yPos = 20;
         
-        addText('EXECUTIVE SUMMARY', 16, true, [0, 120, 212]);
+            addText('EXECUTIVE SUMMARY', 16, true, brandColors.azureDark);
         yPos += 5;
         
         if (inventoryData) {
@@ -2115,7 +2582,7 @@ async function exportToPDF() {
             pdf.addPage();
             yPos = 20;
             
-            addText('WELL-ARCHITECTED FRAMEWORK ASSESSMENT', 16, true, [0, 120, 212]);
+            addText('WELL-ARCHITECTED FRAMEWORK ASSESSMENT', 16, true, brandColors.azureDark);
             yPos += 5;
             
             // Pillar 1: Reliability
@@ -2243,7 +2710,7 @@ async function exportToPDF() {
                 pdf.addPage();
                 yPos = 20;
                 
-                addText('ARCHITECTURE DIAGRAM', 16, true, [0, 120, 212]);
+                addText('ARCHITECTURE DIAGRAM', 16, true, brandColors.azureDark);
                 yPos += 5;
                 
                 addText('The following diagram shows the topology and relationships between AVD components in your environment:');
@@ -2269,7 +2736,7 @@ async function exportToPDF() {
             pdf.addPage();
             yPos = 20;
             
-            addText('DETAILED RESOURCE INVENTORY', 16, true, [0, 120, 212]);
+            addText('DETAILED RESOURCE INVENTORY', 16, true, brandColors.azureDark);
             yPos += 5;
             
             // Subscriptions
@@ -2299,7 +2766,7 @@ async function exportToPDF() {
                     // Main Host Pools Table
                     const hostPoolTableData = sub.hostPools.map(hp => {
                         const type = `${hp.hostPoolType}`;
-                        const loadBalancing = hp.loadBalancerType;
+                        const loadBalancing = `${hp.loadBalancerType || 'N/A'}`.replace(/([a-z])([A-Z])/g, '$1 $2');
                         const hosts = `${hp.sessionHostCount} (${hp.availableHosts}A/${hp.unavailableHosts}U)`;
                         const sessions = hp.totalUserSessions > 0 ? `${hp.totalUserSessions} (${hp.activeUserSessions}A/${hp.disconnectedUserSessions}D)` : '0';
                         const avgSessions = hp.sessionHostCount > 0 && hp.totalUserSessions > 0 ? (hp.totalUserSessions / hp.sessionHostCount).toFixed(1) : '0';
@@ -2323,18 +2790,18 @@ async function exportToPDF() {
                         head: [['Host Pool', 'Type', 'Load Bal', 'Hosts', 'Sessions', 'Avg/Host', 'Val Env', 'Scaling']],
                         body: hostPoolTableData,
                         theme: 'grid',
-                        headStyles: { fillColor: [0, 120, 212], fontSize: 7, fontStyle: 'bold' },
+                        headStyles: { fillColor: brandColors.navy, fontSize: 7, fontStyle: 'bold' },
                         bodyStyles: { fontSize: 6.5 },
                         margin: { left: margin, right: margin },
                         columnStyles: {
-                            0: { cellWidth: 50 },
-                            1: { cellWidth: 20, halign: 'center' },
-                            2: { cellWidth: 24, halign: 'center' },
-                            3: { cellWidth: 22, halign: 'center' },
-                            4: { cellWidth: 22, halign: 'center' },
+                            0: { cellWidth: 44 },
+                            1: { cellWidth: 18, halign: 'center' },
+                            2: { cellWidth: 22, halign: 'center' },
+                            3: { cellWidth: 20, halign: 'center' },
+                            4: { cellWidth: 20, halign: 'center' },
                             5: { cellWidth: 16, halign: 'center' },
-                            6: { cellWidth: 16, halign: 'center' },
-                            7: { cellWidth: 18, halign: 'center' }
+                            6: { cellWidth: 15, halign: 'center' },
+                            7: { cellWidth: 15, halign: 'center' }
                         },
                         didParseCell: function(data) {
                             // Highlight validation environment column
@@ -2429,6 +2896,123 @@ async function exportToPDF() {
                     yPos += 3;
                 }
                 
+                    // Session-host configuration profiles
+                    const configurationProfiles = sub.hostPools.filter(hp => hp.sessionHostConfiguration);
+                    if (yPos > pageHeight - 35) {
+                        pdf.addPage();
+                        yPos = 20;
+                    }
+
+                    addText('Session-host configuration profiles:', 11, true);
+                    pdf.setFontSize(8);
+                    pdf.setFont(undefined, 'normal');
+                    pdf.setTextColor(80, 80, 80);
+                    pdf.text('Deployment profiles used to create session-host virtual machines. Key Vault values are represented by secret URIs only.', margin, yPos);
+                    pdf.setTextColor(0, 0, 0);
+                    yPos += 5;
+
+                    if (configurationProfiles.length === 0) {
+                        pdf.setFontSize(8);
+                        pdf.setTextColor(150, 150, 150);
+                        pdf.text('No session-host configuration profiles were returned for this subscription.', margin + 5, yPos);
+                        pdf.setTextColor(0, 0, 0);
+                        yPos += 8;
+                    } else {
+                        const formatProfileValue = (value) => {
+                            if (value === null || value === undefined || value === '') return 'N/A';
+                            if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'N/A';
+                            if (typeof value === 'object') return JSON.stringify(value);
+                            return String(value);
+                        };
+
+                        configurationProfiles.forEach(hp => {
+                            const profile = hp.sessionHostConfiguration;
+                            if (yPos > pageHeight - 35) {
+                                pdf.addPage();
+                                yPos = 20;
+                            }
+
+                            pdf.setFontSize(9);
+                            pdf.setFont(undefined, 'bold');
+                            pdf.setTextColor(4, 47, 84);
+                            pdf.text(`${hp.name} - ${formatProfileValue(profile.name || 'Default profile')}`, margin, yPos);
+                            yPos += 4;
+                            pdf.setFont(undefined, 'normal');
+                            pdf.setTextColor(0, 0, 0);
+
+                            const profileRows = [
+                                ['Status', profile.status],
+                                ['Source', profile.source],
+                                ['Friendly Name', profile.friendlyName],
+                                ['Provisioning State', profile.provisioningState],
+                                ['Profile Version', profile.version],
+                                ['VM Location', profile.vmLocation],
+                                ['VM Resource Group', profile.vmResourceGroup],
+                                ['VM Name Prefix', profile.vmNamePrefix],
+                                ['VM Size', profile.vmSize],
+                                ['Availability Zones', profile.availabilityZones],
+                                ['VM Tags', profile.vmTags],
+                                ['Image Type', profile.imageType || profile.image?.type],
+                                ['Marketplace Image', [
+                                    profile.marketplaceImage?.publisher || profile.image?.marketplace?.publisher,
+                                    profile.marketplaceImage?.offer || profile.image?.marketplace?.offer,
+                                    profile.marketplaceImage?.sku || profile.image?.marketplace?.sku,
+                                    profile.marketplaceImage?.version || profile.image?.marketplace?.version
+                                ].filter(value => value !== null && value !== undefined && value !== '').join(' / ')],
+                                ['Custom Image ID', profile.customImageId || profile.image?.customImageId],
+                                ['Managed Disk Type', profile.disk?.managedDiskType],
+                                ['OS Disk Size (GB)', profile.disk?.osDiskSizeInGB],
+                                ['Ephemeral Disk Option', profile.disk?.ephemeral?.option],
+                                ['Ephemeral Disk Placement', profile.disk?.ephemeral?.placement],
+                                ['Subnet ID', profile.network?.subnetId],
+                                ['Network Security Group', profile.network?.networkSecurityGroupId],
+                                ['Domain Join Type', profile.domainJoin?.type],
+                                ['Domain Name', profile.domainJoin?.domainName],
+                                ['Organizational Unit', profile.domainJoin?.organizationalUnitPath],
+                                ['MDM Provider GUID', profile.domainJoin?.mdmProviderGuid],
+                                ['Security Type', profile.security?.type],
+                                ['Secure Boot', profile.security?.secureBoot],
+                                ['vTPM', profile.security?.vTpm],
+                                ['Boot Diagnostics', profile.bootDiagnostics],
+                                ['Custom Configuration Script', profile.customConfigurationScriptUrl],
+                                ['Resource ID', profile.id],
+                                ['Resource Type', profile.type]
+                            ].map(([label, value]) => [label, formatProfileValue(value)]);
+
+                            const keyVaultReferences = Array.isArray(profile.keyVaultReferences) ? profile.keyVaultReferences : [];
+                            if (keyVaultReferences.length > 0) {
+                                keyVaultReferences.forEach(item => {
+                                    profileRows.push([
+                                        `Key Vault URI (${formatProfileValue(item.purpose)})`,
+                                        formatProfileValue(item.reference?.keyVaultUri)
+                                    ]);
+                                });
+                            } else {
+                                profileRows.push(['Key Vault References', 'None reported']);
+                            }
+
+                            if (profile.error) {
+                                profileRows.push(['Collection Error', profile.error]);
+                            }
+
+                            pdf.autoTable({
+                                startY: yPos,
+                                head: [['Property', 'Value']],
+                                body: profileRows,
+                                theme: 'striped',
+                                headStyles: { fillColor: [4, 47, 84], textColor: [255, 255, 255], fontSize: 8, fontStyle: 'bold' },
+                                bodyStyles: { fontSize: 7, cellPadding: 2.2, overflow: 'linebreak' },
+                                alternateRowStyles: { fillColor: [241, 247, 252] },
+                                margin: { left: margin, right: margin },
+                                columnStyles: {
+                                    0: { cellWidth: 48, fontStyle: 'bold', textColor: [4, 47, 84] },
+                                    1: { cellWidth: 122 }
+                                }
+                            });
+                            yPos = pdf.lastAutoTable.finalY + 6;
+                        });
+                    }
+
                 // Session Hosts Detail - Table Format (Landscape)
                 if (sub.hostPools.length > 0) {
                     const allSessionHosts = sub.hostPools.flatMap(hp => 
@@ -2488,7 +3072,7 @@ async function exportToPDF() {
                             head: [['Session Host', 'Host Pool', 'Status', 'Sessions', 'VM Size', 'Private IP', 'Image Source', 'OS Version', 'Agent Ver', 'Last Heartbeat']],
                             body: sessionHostTableData,
                             theme: 'grid',
-                            headStyles: { fillColor: [0, 120, 212], fontSize: 7, fontStyle: 'bold' },
+                            headStyles: { fillColor: brandColors.navy, fontSize: 7, fontStyle: 'bold' },
                             bodyStyles: { fontSize: 6.5 },
                             margin: { left: margin, right: margin },
                             columnStyles: {
@@ -2563,14 +3147,14 @@ async function exportToPDF() {
                         head: [['Workspace Name', 'Friendly Name', 'Location', 'App Groups', 'Resource Group']],
                         body: workspaceTableData,
                         theme: 'grid',
-                        headStyles: { fillColor: [0, 120, 212], fontSize: 8, fontStyle: 'bold' },
+                        headStyles: { fillColor: brandColors.navy, fontSize: 8, fontStyle: 'bold' },
                         bodyStyles: { fontSize: 7 },
                         margin: { left: margin, right: margin },
                         columnStyles: {
-                            0: { cellWidth: 55 },
-                            1: { cellWidth: 45 },
-                            2: { cellWidth: 26 },
-                            3: { cellWidth: 20, halign: 'center' },
+                            0: { cellWidth: 50 },
+                            1: { cellWidth: 40 },
+                            2: { cellWidth: 25 },
+                            3: { cellWidth: 18, halign: 'center' },
                             4: { cellWidth: 42 }
                         },
                         didParseCell: function(data) {
@@ -2631,7 +3215,7 @@ async function exportToPDF() {
                                 head: [['Application Group']],
                                 body: agTableData,
                                 theme: 'striped',
-                                headStyles: { fillColor: [41, 128, 185], fontSize: 7 },
+                                headStyles: { fillColor: brandColors.navyMedium, fontSize: 7 },
                                 bodyStyles: { fontSize: 7 },
                                 margin: { left: margin + 5, right: margin },
                                 columnStyles: {
@@ -2680,15 +3264,15 @@ async function exportToPDF() {
                         head: [['Name', 'Type', 'Host Pool', 'Workspace', 'Apps', 'Location']],
                         body: appGroupTableData,
                         theme: 'grid',
-                        headStyles: { fillColor: [0, 120, 212], fontSize: 8, fontStyle: 'bold' },
+                        headStyles: { fillColor: brandColors.navy, fontSize: 8, fontStyle: 'bold' },
                         bodyStyles: { fontSize: 7 },
                         margin: { left: margin, right: margin },
                         columnStyles: {
-                            0: { cellWidth: 48 },
-                            1: { cellWidth: 24, halign: 'center' },
-                            2: { cellWidth: 36 },
-                            3: { cellWidth: 36 },
-                            4: { cellWidth: 16, halign: 'center' },
+                            0: { cellWidth: 45 },
+                            1: { cellWidth: 22, halign: 'center' },
+                            2: { cellWidth: 32 },
+                            3: { cellWidth: 32 },
+                            4: { cellWidth: 14, halign: 'center' },
                             5: { cellWidth: 28 }
                         },
                         didParseCell: function(data) {
@@ -2750,7 +3334,7 @@ async function exportToPDF() {
                                 head: [['Application', 'File Path', 'Portal']],
                                 body: appTableData,
                                 theme: 'striped',
-                                headStyles: { fillColor: [41, 128, 185], fontSize: 7 },
+                                headStyles: { fillColor: brandColors.navyMedium, fontSize: 7 },
                                 bodyStyles: { fontSize: 7 },
                                 margin: { left: margin + 5, right: margin },
                                 columnStyles: {
@@ -2815,10 +3399,10 @@ async function exportToPDF() {
                             head: [['Property', 'Value']],
                             body: basicInfoData,
                             theme: 'grid',
-                            headStyles: { fillColor: [0, 120, 212], fontSize: 9 },
+                            headStyles: { fillColor: brandColors.navy, fontSize: 9 },
                             bodyStyles: { fontSize: 8 },
                             margin: { left: margin, right: margin },
-                            tableWidth: 'auto',
+                            tableWidth: 'wrap',
                             columnStyles: {
                                 0: { cellWidth: 50 },
                                 1: { cellWidth: 120 }
@@ -2850,10 +3434,10 @@ async function exportToPDF() {
                                 head: [['Host Pool', 'Status']],
                                 body: hostPoolData,
                                 theme: 'striped',
-                                headStyles: { fillColor: [41, 128, 185], fontSize: 8 },
+                                headStyles: { fillColor: brandColors.navyMedium, fontSize: 8 },
                                 bodyStyles: { fontSize: 8 },
                                 margin: { left: margin + 5, right: margin },
-                                tableWidth: 'auto',
+                                tableWidth: 'wrap',
                                 columnStyles: {
                                     0: { cellWidth: 80 },
                                     1: { cellWidth: 40 }
@@ -2877,8 +3461,16 @@ async function exportToPDF() {
                                 pdf.setFont(undefined, 'normal');
                                 
                                 // Schedule Overview Table
+                                const formatScheduleValue = (value, suffix = '') => value === null || value === undefined || value === ''
+                                    ? 'N/A'
+                                    : `${value}${suffix}`;
+                                const scalingSettings = getScalingScheduleSettings(schedule);
                                 const scheduleOverview = [
-                                    ['Days', schedule.daysOfWeek || 'Not specified']
+                                    ['Days', schedule.daysOfWeek || 'Not specified'],
+                                    ['Scaling method', formatScheduleValue(scalingSettings.scalingMethod)],
+                                    ['Minimum host pool size', `Ramp-up: ${formatScheduleValue(scalingSettings.rampUpMinimumHostPoolSize)}; Ramp-down: ${formatScheduleValue(scalingSettings.rampDownMinimumHostPoolSize)}`],
+                                    ['Maximum host pool size / VM limit', `Ramp-up: ${formatScheduleValue(scalingSettings.rampUpMaximumHostPoolSize)}; Ramp-down: ${formatScheduleValue(scalingSettings.rampDownMaximumHostPoolSize)}${scalingSettings.virtualMachineLimit === null ? '' : `; VM limit: ${formatScheduleValue(scalingSettings.virtualMachineLimit)}`}`],
+                                    ['Capacity threshold', `Ramp-up: ${formatScheduleValue(scalingSettings.rampUpCapacityThresholdPct, '%')}; Ramp-down: ${formatScheduleValue(scalingSettings.rampDownCapacityThresholdPct, '%')}`]
                                 ];
                                 
                                 pdf.autoTable({
@@ -2950,7 +3542,7 @@ async function exportToPDF() {
                                     head: [['Phase', 'Start', 'Load Balancing', 'Min %', 'Cap %', 'Extra']],
                                     body: phasesData,
                                     theme: 'grid',
-                                    headStyles: { fillColor: [0, 120, 212], fontSize: 7 },
+                                    headStyles: { fillColor: brandColors.navy, fontSize: 7 },
                                     bodyStyles: { fontSize: 7 },
                                     margin: { left: margin + 5, right: margin },
                                     tableWidth: 'wrap',
@@ -3035,7 +3627,7 @@ async function exportToPDF() {
                             margin: { left: margin + 3, right: margin },
                             columnStyles: {
                                 0: { cellWidth: 40, fontStyle: 'bold' },
-                                1: { cellWidth: 140 }
+                                1: { cellWidth: 137 }
                             }
                         });
                         yPos = pdf.lastAutoTable.finalY + 5;
@@ -3073,7 +3665,7 @@ async function exportToPDF() {
                                 head: [['Image Name', 'OS Type', 'OS State', 'Versions', 'In Use', 'Identifier']],
                                 body: imageTableData,
                                 theme: 'grid',
-                                headStyles: { fillColor: [52, 152, 219], fontSize: 7, fontStyle: 'bold' },
+                                    headStyles: { fillColor: brandColors.azureDark, fontSize: 7, fontStyle: 'bold' },
                                 bodyStyles: { fontSize: 6.5 },
                                 margin: { left: margin + 5, right: margin },
                                 columnStyles: {
@@ -3141,7 +3733,7 @@ async function exportToPDF() {
                                         head: [['Version', 'Published Date', 'Replica Count']],
                                         body: versionTableData,
                                         theme: 'striped',
-                                        headStyles: { fillColor: [149, 165, 166], fontSize: 7 },
+                                        headStyles: { fillColor: brandColors.navyMedium, fontSize: 7 },
                                         bodyStyles: { fontSize: 7 },
                                         margin: { left: margin + 8, right: margin },
                                         columnStyles: {
@@ -3173,7 +3765,7 @@ async function exportToPDF() {
             pdf.addPage();
             yPos = 20;
             
-            addText('REFERENCES', 14, true, [0, 120, 212]);
+            addText('REFERENCES', 14, true, brandColors.azureDark);
             yPos += 5;
             
             addSubSection('Microsoft Documentation');
@@ -3204,13 +3796,27 @@ async function exportToPDF() {
         const pageCount = pdf.internal.getNumberOfPages();
         for (let i = 1; i <= pageCount; i++) {
             pdf.setPage(i);
+            const currentPageWidth = pdf.internal.pageSize.getWidth();
+            const currentPageHeight = pdf.internal.pageSize.getHeight();
+
+            if (i > 1) {
+                pdf.setFillColor(...brandColors.navy);
+                pdf.rect(0, 0, currentPageWidth, 10, 'F');
+                pdf.setFontSize(7);
+                pdf.setFont(undefined, 'bold');
+                pdf.setTextColor(255, 255, 255);
+                pdf.text('GETTOTHECLOUD  /  AZURE VIRTUAL DESKTOP', margin, 6.5);
+            }
+
+            pdf.setDrawColor(...brandColors.azure);
+            pdf.setLineWidth(0.35);
+            pdf.line(margin, currentPageHeight - 12, currentPageWidth - margin, currentPageHeight - 12);
             pdf.setFontSize(8);
-            pdf.setTextColor(150, 150, 150);
-            // Page number
-            pdf.text(`Page ${i} of ${pageCount}`, margin + maxWidth - 20, 290);
-            // Attribution footer
+            pdf.setFont(undefined, 'normal');
+            pdf.setTextColor(...brandColors.muted);
+            pdf.text(`Page ${i} of ${pageCount}`, currentPageWidth - margin, currentPageHeight - 6, { align: 'right' });
             pdf.setFontSize(7);
-            pdf.text('Created by Alex ter Neuzen | www.gettothe.cloud', margin, 290);
+            pdf.text('GetToTheCloud  |  www.gettothe.cloud', margin, currentPageHeight - 6);
         }
         
         // Save PDF

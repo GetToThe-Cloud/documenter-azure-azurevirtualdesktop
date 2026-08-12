@@ -62,9 +62,7 @@ function Test-Prerequisites {
                     $online = Find-Module -Name $module.Name -ErrorAction SilentlyContinue
                     if ($online -and $online.Version -gt $installedVersion) {
                         Write-Host "  ⚠ Module $($module.Name) version $installedVersion (newer version $($online.Version) available)" -ForegroundColor Yellow
-                        if ($UpdateModules) {
-                            $outdatedModules += $module
-                        }
+                        $outdatedModules += $module
                     } else {
                         Write-Host "  ✓ Module $($module.Name) version $installedVersion" -ForegroundColor Green
                     }
@@ -91,8 +89,15 @@ function Test-Prerequisites {
         }
     }
     
+    # Ask before updating modules unless the switch explicitly requested it.
+    $shouldUpdateModules = $UpdateModules
+    if (-not $UpdateModules -and $outdatedModules.Count -gt 0) {
+        $updateAnswer = Read-Host "`n  Do you want to update the outdated modules now? (Y/N)"
+        $shouldUpdateModules = $updateAnswer -match '^(?i:y|yes)$'
+    }
+
     # Update outdated modules
-    if ($UpdateModules -and $outdatedModules.Count -gt 0) {
+    if ($shouldUpdateModules -and $outdatedModules.Count -gt 0) {
         Write-Host "`n  ℹ️  Updating outdated modules..." -ForegroundColor Cyan
         foreach ($module in $outdatedModules) {
             try {
@@ -105,16 +110,523 @@ function Test-Prerequisites {
             }
         }
     } elseif ($outdatedModules.Count -gt 0) {
-        Write-Host "`n  ℹ️  To update modules, run with -UpdateModules switch" -ForegroundColor Cyan
+        Write-Host "`n  ℹ️  Outdated modules were not updated." -ForegroundColor Cyan
     }
     
     Write-Host "`n✓ All prerequisites met!`n" -ForegroundColor Green
     return $true
 }
 
-function Get-AVDInventoryData {
+function Get-AVDEnabledSubscriptions {
     [CmdletBinding()]
     param()
+
+    return @(Get-AzSubscription -ErrorAction Stop | Where-Object { $_.State -eq 'Enabled' })
+}
+
+function Resolve-AVDSubscriptionSelection {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [string[]]$SubscriptionIds
+    )
+
+    $availableSubscriptions = @(Get-AVDEnabledSubscriptions)
+    if (-not $PSBoundParameters.ContainsKey('SubscriptionIds')) {
+        return $availableSubscriptions
+    }
+
+    $requestedIds = @(
+        @($SubscriptionIds) | ForEach-Object {
+            if ($_ -isnot [string]) {
+                throw [ArgumentException]::new('Subscription IDs must be strings.')
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($_)) {
+                $_.Trim()
+            }
+        } | Select-Object -Unique
+    )
+
+    if ($requestedIds.Count -eq 0) {
+        throw [ArgumentException]::new('At least one enabled subscription must be selected.')
+    }
+
+    $availableById = @{}
+    foreach ($subscription in $availableSubscriptions) {
+        $availableById[[string]$subscription.Id] = $subscription
+    }
+
+    $unknownIds = @($requestedIds | Where-Object { -not $availableById.ContainsKey($_) })
+    if ($unknownIds.Count -gt 0) {
+        throw [ArgumentException]::new('One or more selected subscriptions are not enabled or are not accessible.')
+    }
+
+    return @($requestedIds | ForEach-Object { $availableById[$_] })
+}
+
+function Get-AVDSubscriptionScope {
+    [CmdletBinding()]
+    param()
+
+    $subscriptions = @(Get-AVDEnabledSubscriptions)
+    return @($subscriptions | ForEach-Object {
+        [ordered]@{
+            id = [string]$_.Id
+            name = [string]$_.Name
+            tenantId = [string]$_.TenantId
+            state = [string]$_.State
+            scanEligible = $true
+        }
+    })
+}
+
+function Get-AVDPropertyValue {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$InputObject,
+        [Parameter(Mandatory)]
+        [string[]]$Names
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    foreach ($name in $Names) {
+        if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($name)) {
+            return $InputObject[$name]
+        }
+
+        $property = $InputObject.PSObject.Properties | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if ($property) {
+            return $property.Value
+        }
+    }
+
+    return $null
+}
+
+function Convert-AVDKeyVaultReference {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Reference
+    )
+
+    if ($null -eq $Reference) {
+        return $null
+    }
+
+    $referenceUri = if ($Reference -is [string]) {
+        [string]$Reference
+    } else {
+        Get-AVDPropertyValue -InputObject $Reference -Names @('keyVaultSecretUri', 'usernameKeyVaultSecretUri', 'passwordKeyVaultSecretUri', 'keyVaultUri', 'secretUri', 'secretUriWithVersion', 'uri')
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$referenceUri)) {
+        return $null
+    }
+
+    try {
+        $parsedUri = [Uri]$referenceUri
+    }
+    catch {
+        return $null
+    }
+
+    if (-not $parsedUri.IsAbsoluteUri -or $parsedUri.Scheme -ne 'https' -or $parsedUri.AbsolutePath -notmatch '(?i)/secrets/') {
+        return $null
+    }
+
+    $vaultName = if ($Reference -is [string]) {
+        $null
+    } else {
+        Get-AVDPropertyValue -InputObject $Reference -Names @('vaultName', 'keyVaultName')
+    }
+    $secretName = if ($Reference -is [string]) {
+        $null
+    } else {
+        Get-AVDPropertyValue -InputObject $Reference -Names @('secretName')
+    }
+    $secretVersion = if ($Reference -is [string]) {
+        $null
+    } else {
+        Get-AVDPropertyValue -InputObject $Reference -Names @('secretVersion', 'version')
+    }
+
+    $pathSegments = @($parsedUri.AbsolutePath.Trim('/') -split '/')
+    $secretSegmentIndex = -1
+    for ($index = 0; $index -lt $pathSegments.Count; $index++) {
+        if ($pathSegments[$index] -ieq 'secrets') {
+            $secretSegmentIndex = $index
+            break
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$vaultName)) {
+        $vaultName = $parsedUri.Host -replace '(?i)\.vault\..+$', ''
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$secretName) -and $secretSegmentIndex -ge 0 -and $pathSegments.Count -gt ($secretSegmentIndex + 1)) {
+        $secretName = [Uri]::UnescapeDataString($pathSegments[$secretSegmentIndex + 1])
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$secretVersion) -and $secretSegmentIndex -ge 0 -and $pathSegments.Count -gt ($secretSegmentIndex + 2)) {
+        $secretVersion = [Uri]::UnescapeDataString($pathSegments[$secretSegmentIndex + 2])
+    }
+
+    return [ordered]@{
+        configured = $true
+        keyVaultUri = [string]$referenceUri
+        vaultName = $vaultName
+        secretName = $secretName
+        secretVersion = $secretVersion
+    }
+}
+
+function Convert-AVDSessionHostConfigurationData {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Resource,
+        [Parameter(Mandatory)]
+        [ValidateSet('cmdlet', 'arm')]
+        [string]$Source
+    )
+
+    $properties = Get-AVDPropertyValue -InputObject $Resource -Names @('properties')
+    if ($null -eq $properties) {
+        $properties = $Resource
+    }
+
+    $imageInfo = Get-AVDPropertyValue -InputObject $properties -Names @('imageInfo', 'image')
+    $marketplaceInfo = Get-AVDPropertyValue -InputObject $properties -Names @('marketplaceImageInfo', 'marketplaceInfo', 'marketplaceImage')
+    if ($null -eq $marketplaceInfo -and $null -ne $imageInfo) {
+        $marketplaceInfo = Get-AVDPropertyValue -InputObject $imageInfo -Names @('marketplaceImageInfo', 'marketplaceInfo', 'marketplaceImage')
+    }
+
+    $diskInfo = Get-AVDPropertyValue -InputObject $properties -Names @('diskInfo', 'diskSettings')
+    $managedDiskInfo = Get-AVDPropertyValue -InputObject $diskInfo -Names @('managedDisk')
+    $ephemeralDiskSettings = Get-AVDPropertyValue -InputObject $diskInfo -Names @('diffDiskSettings', 'ephemeralOsDiskSettings', 'ephemeralDiskSettings', 'ephemeralDisk')
+    $networkInfo = Get-AVDPropertyValue -InputObject $properties -Names @('networkInfo', 'networkSettings')
+    $domainInfo = Get-AVDPropertyValue -InputObject $properties -Names @('domainInfo', 'domainJoinSettings')
+    $activeDirectoryInfo = Get-AVDPropertyValue -InputObject $domainInfo -Names @('activeDirectoryInfo')
+    $azureActiveDirectoryInfo = Get-AVDPropertyValue -InputObject $domainInfo -Names @('azureActiveDirectoryInfo')
+    $securityInfo = Get-AVDPropertyValue -InputObject $properties -Names @('securityInfo', 'securitySettings')
+
+    $vmAdminCredential = Get-AVDPropertyValue -InputObject $properties -Names @('vmAdminCredentials', 'vmAdminCredential')
+    $adCredential = Get-AVDPropertyValue -InputObject $activeDirectoryInfo -Names @('domainCredentials', 'domainJoinCredential')
+    if ($null -eq $adCredential) {
+        $adCredential = Get-AVDPropertyValue -InputObject $properties -Names @('domainJoinCredentials', 'domainJoinCredential', 'adCredential')
+    }
+
+    $vmAdminUsernameReference = Get-AVDPropertyValue -InputObject $properties -Names @('vmAdminUsernameKeyVaultSecretUri')
+    $vmAdminPasswordReference = Get-AVDPropertyValue -InputObject $properties -Names @('vmAdminPasswordKeyVaultSecretUri')
+    if ($null -ne $vmAdminCredential) {
+        if ($null -eq $vmAdminUsernameReference) {
+            $vmAdminUsernameReference = Get-AVDPropertyValue -InputObject $vmAdminCredential -Names @('usernameKeyVaultSecretUri', 'usernameReference')
+        }
+        if ($null -eq $vmAdminPasswordReference) {
+            $vmAdminPasswordReference = Get-AVDPropertyValue -InputObject $vmAdminCredential -Names @('passwordKeyVaultSecretUri', 'passwordReference')
+        }
+    }
+
+    $adUsernameReference = Get-AVDPropertyValue -InputObject $properties -Names @('domainJoinUsernameKeyVaultSecretUri', 'adUsernameKeyVaultSecretUri')
+    $adPasswordReference = Get-AVDPropertyValue -InputObject $properties -Names @('domainJoinPasswordKeyVaultSecretUri', 'adPasswordKeyVaultSecretUri')
+    if ($null -ne $adCredential) {
+        if ($null -eq $adUsernameReference) {
+            $adUsernameReference = Get-AVDPropertyValue -InputObject $adCredential -Names @('usernameKeyVaultSecretUri', 'usernameReference')
+        }
+        if ($null -eq $adPasswordReference) {
+            $adPasswordReference = Get-AVDPropertyValue -InputObject $adCredential -Names @('passwordKeyVaultSecretUri', 'passwordReference')
+        }
+    }
+
+    $vmAdminCredentialData = [ordered]@{
+        username = Convert-AVDKeyVaultReference -Reference $vmAdminUsernameReference
+        password = Convert-AVDKeyVaultReference -Reference $vmAdminPasswordReference
+    }
+
+    $adCredentialData = [ordered]@{
+        username = Convert-AVDKeyVaultReference -Reference $adUsernameReference
+        password = Convert-AVDKeyVaultReference -Reference $adPasswordReference
+    }
+
+    $keyVaultReferences = @()
+    if ($vmAdminCredentialData.username) {
+        $keyVaultReferences += [ordered]@{
+            purpose = 'vmAdminUsername'
+            reference = $vmAdminCredentialData.username
+        }
+    }
+    if ($vmAdminCredentialData.password) {
+        $keyVaultReferences += [ordered]@{
+            purpose = 'vmAdminPassword'
+            reference = $vmAdminCredentialData.password
+        }
+    }
+    if ($adCredentialData.username) {
+        $keyVaultReferences += [ordered]@{
+            purpose = 'domainJoinUsername'
+            reference = $adCredentialData.username
+        }
+    }
+    if ($adCredentialData.password) {
+        $keyVaultReferences += [ordered]@{
+            purpose = 'domainJoinPassword'
+            reference = $adCredentialData.password
+        }
+    }
+
+    $marketplaceImageData = [ordered]@{
+        publisher = Get-AVDPropertyValue -InputObject $marketplaceInfo -Names @('publisher')
+        offer = Get-AVDPropertyValue -InputObject $marketplaceInfo -Names @('offer')
+        sku = Get-AVDPropertyValue -InputObject $marketplaceInfo -Names @('sku')
+        version = Get-AVDPropertyValue -InputObject $marketplaceInfo -Names @('exactVersion', 'version')
+    }
+    $customInfo = Get-AVDPropertyValue -InputObject $imageInfo -Names @('customInfo', 'customImageInfo')
+    $imageType = Get-AVDPropertyValue -InputObject $imageInfo -Names @('type', 'imageType')
+    $customImageId = Get-AVDPropertyValue -InputObject $customInfo -Names @('resourceId', 'id')
+    if ($null -eq $customImageId) {
+        $customImageId = Get-AVDPropertyValue -InputObject $properties -Names @('customImageId', 'customImageResourceId', 'imageResourceId')
+    }
+
+    $profile = [ordered]@{
+        status = 'configured'
+        source = $Source
+        name = Get-AVDPropertyValue -InputObject $Resource -Names @('name')
+        id = Get-AVDPropertyValue -InputObject $Resource -Names @('id')
+        type = Get-AVDPropertyValue -InputObject $Resource -Names @('type')
+        version = Get-AVDPropertyValue -InputObject $properties -Names @('version')
+        friendlyName = Get-AVDPropertyValue -InputObject $properties -Names @('friendlyName', 'description')
+        provisioningState = Get-AVDPropertyValue -InputObject $properties -Names @('provisioningState')
+        vmLocation = Get-AVDPropertyValue -InputObject $properties -Names @('vmLocation', 'location')
+        vmResourceGroup = Get-AVDPropertyValue -InputObject $properties -Names @('vmResourceGroup', 'resourceGroup')
+        vmNamePrefix = Get-AVDPropertyValue -InputObject $properties -Names @('vmNamePrefix', 'namePrefix')
+        vmSize = Get-AVDPropertyValue -InputObject $properties -Names @('vmSizeId', 'vmSize', 'size')
+        availabilityZones = Get-AVDPropertyValue -InputObject $properties -Names @('availabilityZones', 'zones')
+        vmTags = Get-AVDPropertyValue -InputObject $properties -Names @('vmTags', 'tags')
+        imageType = $imageType
+        marketplaceImage = $marketplaceImageData
+        customImageId = $customImageId
+        image = [ordered]@{
+            type = $imageType
+            marketplace = $marketplaceImageData
+            customImageId = $customImageId
+        }
+        disk = [ordered]@{
+            managedDiskType = Get-AVDPropertyValue -InputObject $managedDiskInfo -Names @('type')
+            osDiskSizeInGB = Get-AVDPropertyValue -InputObject $properties -Names @('osDiskSizeInGB', 'osDiskSizeGB')
+            securityEncryptionType = Get-AVDPropertyValue -InputObject $properties -Names @('securityEncryptionType')
+            ephemeral = [ordered]@{
+                option = Get-AVDPropertyValue -InputObject $ephemeralDiskSettings -Names @('option')
+                placement = Get-AVDPropertyValue -InputObject $ephemeralDiskSettings -Names @('placement')
+            }
+        }
+        network = [ordered]@{
+            subnetId = Get-AVDPropertyValue -InputObject $networkInfo -Names @('subnetId', 'virtualNetworkSubnetId')
+            networkSecurityGroupId = Get-AVDPropertyValue -InputObject $networkInfo -Names @('securityGroupId', 'networkSecurityGroupId')
+        }
+        domainJoin = [ordered]@{
+            type = Get-AVDPropertyValue -InputObject $domainInfo -Names @('joinType', 'domainJoinType')
+            domainName = Get-AVDPropertyValue -InputObject $activeDirectoryInfo -Names @('domainName')
+            organizationalUnitPath = Get-AVDPropertyValue -InputObject $activeDirectoryInfo -Names @('ouPath', 'organizationalUnitPath')
+            mdmProviderGuid = Get-AVDPropertyValue -InputObject $azureActiveDirectoryInfo -Names @('mdmProviderGuid', 'intuneEnrollmentGuid')
+        }
+        security = [ordered]@{
+            type = Get-AVDPropertyValue -InputObject $securityInfo -Names @('type', 'securityType')
+            secureBoot = Get-AVDPropertyValue -InputObject $securityInfo -Names @('secureBootEnabled', 'secureBoot')
+            vTpm = Get-AVDPropertyValue -InputObject $securityInfo -Names @('vTpmEnabled', 'vTpm', 'virtualTpm')
+        }
+        bootDiagnostics = Get-AVDPropertyValue -InputObject $properties -Names @('bootDiagnosticsInfo', 'bootDiagnostics', 'bootDiagnosticsSettings')
+        customConfigurationScriptUrl = Get-AVDPropertyValue -InputObject $properties -Names @('customConfigurationScriptUrl', 'customConfigurationScriptUri')
+        vmAdminCredential = $vmAdminCredentialData
+        adCredential = $adCredentialData
+        keyVaultReferences = $keyVaultReferences
+    }
+
+    return $profile
+}
+
+function Get-AVDSessionHostConfigurationData {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SubscriptionId,
+        [Parameter(Mandatory)]
+        [string]$HostPoolName,
+        [Parameter(Mandatory)]
+        [string]$ResourceGroupName
+    )
+
+    $configurationCommand = Get-Command -Name 'Get-AzWvdSessionHostConfiguration' -ErrorAction SilentlyContinue
+    $lastError = $null
+
+    if ($configurationCommand) {
+        try {
+            $profiles = @(Get-AzWvdSessionHostConfiguration -HostPoolName $HostPoolName -ResourceGroupName $ResourceGroupName -ErrorAction Stop)
+            $profile = $profiles | Where-Object { $_.Name -eq 'default' -or $_.Name -like '*/default' } | Select-Object -First 1
+            if (-not $profile -and $profiles.Count -gt 0) {
+                $profile = $profiles[0]
+            }
+            if ($profile) {
+                return Convert-AVDSessionHostConfigurationData -Resource $profile -Source 'cmdlet'
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+        }
+    }
+
+    if (-not (Get-Command -Name 'Invoke-AzRestMethod' -ErrorAction SilentlyContinue)) {
+        return [ordered]@{
+            status = 'unavailable'
+            source = 'none'
+            name = 'default'
+            error = 'Neither Get-AzWvdSessionHostConfiguration nor Invoke-AzRestMethod is available.'
+        }
+    }
+
+    $encodedSubscriptionId = [Uri]::EscapeDataString($SubscriptionId)
+    $encodedResourceGroupName = [Uri]::EscapeDataString($ResourceGroupName)
+    $encodedHostPoolName = [Uri]::EscapeDataString($HostPoolName)
+    $apiVersions = @('2026-04-01-preview', '2025-04-01-preview', '2024-04-01-preview', '2023-11-01-preview')
+
+    $allArmAttemptsNotFound = $true
+    foreach ($apiVersion in $apiVersions) {
+        $path = "/subscriptions/$encodedSubscriptionId/resourceGroups/$encodedResourceGroupName/providers/Microsoft.DesktopVirtualization/hostPools/$encodedHostPoolName/sessionHostConfigurations/default?api-version=$apiVersion"
+        try {
+            $response = Invoke-AzRestMethod -Path $path -Method GET -ErrorAction Stop
+            if ($response.StatusCode -and [int]$response.StatusCode -ge 400) {
+                if ([int]$response.StatusCode -eq 404) {
+                    continue
+                }
+                $allArmAttemptsNotFound = $false
+                continue
+            }
+
+            $allArmAttemptsNotFound = $false
+            $document = if ($response.Content -is [string]) {
+                ConvertFrom-Json -InputObject $response.Content -ErrorAction Stop
+            } else {
+                $response.Content
+            }
+            if ($document) {
+                return Convert-AVDSessionHostConfigurationData -Resource $document -Source 'arm'
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+            if ($lastError -notmatch '(?i)404|not.?found|resource.?not.?found') {
+                $allArmAttemptsNotFound = $false
+            }
+        }
+    }
+
+    if ($allArmAttemptsNotFound) {
+        return [ordered]@{
+            status = 'notConfigured'
+            source = if ($configurationCommand) { 'cmdlet-arm' } else { 'arm' }
+            name = 'default'
+            error = $null
+        }
+    }
+
+    return [ordered]@{
+        status = 'unavailable'
+        source = if ($configurationCommand) { 'cmdlet-arm' } else { 'arm' }
+        name = 'default'
+        error = $lastError
+    }
+}
+
+function Get-AVDScalingPlanResource {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SubscriptionId,
+        [Parameter(Mandatory)]
+        [string]$ResourceGroupName,
+        [Parameter(Mandatory)]
+        [string]$ScalingPlanName
+    )
+
+    if (-not (Get-Command -Name 'Invoke-AzRestMethod' -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+
+    $encodedSubscriptionId = [Uri]::EscapeDataString($SubscriptionId)
+    $encodedResourceGroupName = [Uri]::EscapeDataString($ResourceGroupName)
+    $encodedScalingPlanName = [Uri]::EscapeDataString($ScalingPlanName)
+    $apiVersions = @('2026-04-01-preview', '2025-10-10', '2024-04-03')
+
+    foreach ($apiVersion in $apiVersions) {
+        $path = "/subscriptions/$encodedSubscriptionId/resourceGroups/$encodedResourceGroupName/providers/Microsoft.DesktopVirtualization/scalingPlans/$encodedScalingPlanName?api-version=$apiVersion"
+        try {
+            $response = Invoke-AzRestMethod -Path $path -Method GET -ErrorAction Stop
+            if ($response.StatusCode -and [int]$response.StatusCode -ge 400) {
+                continue
+            }
+
+            $document = if ($response.Content -is [string]) {
+                ConvertFrom-Json -InputObject $response.Content -ErrorAction Stop
+            } else {
+                $response.Content
+            }
+
+            if ($document) {
+                return $document
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    return $null
+}
+
+function Get-AVDScalingScheduleTimeText {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Schedule,
+        [Parameter(Mandatory)]
+        [string[]]$TimeNames,
+        [Parameter(Mandatory)]
+        [string[]]$HourNames,
+        [Parameter(Mandatory)]
+        [string[]]$MinuteNames
+    )
+
+    $time = Get-AVDPropertyValue -InputObject $Schedule -Names $TimeNames
+    $hour = Get-AVDPropertyValue -InputObject $time -Names @('Hour', 'hour')
+    $minute = Get-AVDPropertyValue -InputObject $time -Names @('Minute', 'minute')
+
+    if ($null -eq $hour) {
+        $hour = Get-AVDPropertyValue -InputObject $Schedule -Names $HourNames
+    }
+    if ($null -eq $minute) {
+        $minute = Get-AVDPropertyValue -InputObject $Schedule -Names $MinuteNames
+    }
+
+    if ($null -eq $hour) {
+        return 'N/A'
+    }
+
+    if ($null -eq $minute) {
+        $minute = 0
+    }
+
+    return "{0:D2}:{1:D2}" -f ([int]$hour), ([int]$minute)
+}
+
+function Get-AVDInventoryData {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [string[]]$SubscriptionIds
+    )
     
     Write-Host "    ○ Gathering subscriptions..." -ForegroundColor Gray
     
@@ -139,6 +651,7 @@ function Get-AVDInventoryData {
             overview = "Azure Virtual Desktop (AVD) is a cloud-based desktop and application virtualization service. This inventory shows all AVD resources and their relationships."
             hostPools = "Host pools contain session hosts (VMs) that serve desktops and applications to users. They define the type (pooled/personal) and load balancing method."
             sessionHosts = "Session hosts are the VMs that run user sessions. They connect to virtual networks and can be managed by scaling plans."
+            sessionHostConfigurations = "Session-host configuration profiles define the VM, image, disk, network, domain-join, security, diagnostics, and custom-script settings used when session hosts are created. Key Vault credentials are inventoried as secret URIs only; secret values are never retrieved."
             workspaces = "Workspaces are end-user facing resources that group application groups for a consistent user experience."
             applicationGroups = "Application groups define which applications or desktops users can access from a host pool."
             scalingPlans = "Scaling plans automate the start/stop of session hosts based on time schedules to optimize costs."
@@ -148,17 +661,21 @@ function Get-AVDInventoryData {
         }
     }
     
-    # Get all subscriptions
-    $subscriptions = Get-AzSubscription | Where-Object { $_.State -eq 'Enabled' }
+    if ($PSBoundParameters.ContainsKey('SubscriptionIds')) {
+        $subscriptions = @(Resolve-AVDSubscriptionSelection -SubscriptionIds $SubscriptionIds)
+    } else {
+        $subscriptions = @(Resolve-AVDSubscriptionSelection)
+    }
     
     foreach ($sub in $subscriptions) {
         Write-Host "    ○ Processing subscription: $($sub.Name)" -ForegroundColor Gray
-        Set-AzContext -SubscriptionId $sub.Id | Out-Null
-        
+
         $subData = @{
             id = $sub.Id
             name = $sub.Name
             tenantId = $sub.TenantId
+            scanStatus = 'pending'
+            scanError = $null
             hostPools = @()
             workspaces = @()
             applicationGroups = @()
@@ -166,12 +683,39 @@ function Get-AVDInventoryData {
             virtualNetworks = @()
             computeGalleries = @()
         }
+
+        try {
+            Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
+            $null = @(Get-AzResourceGroup -ErrorAction Stop | Select-Object -First 1)
+            $subData.scanStatus = 'scanning'
+        }
+        catch {
+            $subData.scanStatus = 'skipped'
+            $subData.scanError = 'No readable Azure resources were found or the current account lacks Reader access.'
+            Write-Host "      ⚠ Skipping subscription: $($sub.Name)" -ForegroundColor Yellow
+            $inventory.subscriptions += $subData
+            continue
+        }
         
         # Get Host Pools
         try {
             $hostPools = Get-AzWvdHostPool -ErrorAction SilentlyContinue
             foreach ($hp in $hostPools) {
                 Write-Host "      • Host Pool: $($hp.Name)" -ForegroundColor DarkGray
+
+                $sessionHostConfiguration = $null
+                try {
+                    $sessionHostConfiguration = Get-AVDSessionHostConfigurationData -SubscriptionId $sub.Id -HostPoolName $hp.Name -ResourceGroupName $hp.Id.Split('/')[4]
+                }
+                catch {
+                    $sessionHostConfiguration = [ordered]@{
+                        status = 'unavailable'
+                        source = 'none'
+                        name = 'default'
+                        error = $_.Exception.Message
+                    }
+                    Write-Host "      ⚠ Could not retrieve session-host configuration: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
                 
                 $hpData = @{
                     name = $hp.Name
@@ -198,6 +742,7 @@ function Get-AVDInventoryData {
                     activeUserSessions = 0
                     disconnectedUserSessions = 0
                     scalingPlanReference = $null
+                    sessionHostConfiguration = $sessionHostConfiguration
                 }
                 
                 # Get Session Hosts
@@ -411,37 +956,81 @@ function Get-AVDInventoryData {
                     schedules = @()
                     hostPoolReferences = @()
                 }
+
+                $cmdletSchedules = @(Get-AVDPropertyValue -InputObject $sp -Names @('Schedule', 'schedule', 'Schedules', 'schedules'))
+                $hasExtendedScheduleData = $false
+                foreach ($cmdletSchedule in $cmdletSchedules) {
+                    if ($null -ne (Get-AVDPropertyValue -InputObject $cmdletSchedule -Names @('CreateDelete', 'createDelete')) -or
+                        $null -ne (Get-AVDPropertyValue -InputObject $cmdletSchedule -Names @('ScalingMethod', 'scalingMethod'))) {
+                        $hasExtendedScheduleData = $true
+                        break
+                    }
+                }
+
+                $rawScalingPlan = if ($hasExtendedScheduleData) {
+                    $null
+                } else {
+                    Get-AVDScalingPlanResource -SubscriptionId $sub.Id -ResourceGroupName $spData.resourceGroup -ScalingPlanName $sp.Name
+                }
+                $rawScalingPlanProperties = Get-AVDPropertyValue -InputObject $rawScalingPlan -Names @('properties', 'Properties')
+                $rawSchedules = if ($null -ne $rawScalingPlanProperties) {
+                    @(Get-AVDPropertyValue -InputObject $rawScalingPlanProperties -Names @('schedules', 'Schedules', 'schedule', 'Schedule'))
+                } else {
+                    @()
+                }
+                $scheduleCollection = if ($rawSchedules.Count -gt 0) { $rawSchedules } else { $cmdletSchedules }
                 
                 # Get schedules with proper time conversion
-                if ($sp.Schedule) {
-                    foreach ($schedule in $sp.Schedule) {
-                        # Helper function to format time - handles both Hour/hour and Minute/minute properties
-                        # function Format-Time {
-                        #     param($timeObj)
-                        #     if ($null -eq $timeObj) { return 'N/A' }
-                        #     $hour = if ($timeObj.Hour -ne $null) { $timeObj.Hour } elseif ($timeObj.hour -ne $null) { $timeObj.hour } else { return 'N/A' }
-                        #     $minute = if ($timeObj.Minute -ne $null) { $timeObj.Minute } elseif ($timeObj.minute -ne $null) { $timeObj.minute } else { return 'N/A' }
-                        #     return "{0:D2}:{1:D2}" -f $hour, $minute
-                        # }
-                        
+                if ($scheduleCollection.Count -gt 0) {
+                    foreach ($schedule in $scheduleCollection) {
+                        $createDelete = Get-AVDPropertyValue -InputObject $schedule -Names @('CreateDelete', 'createDelete')
+                        $virtualMachineLimit = Get-AVDPropertyValue -InputObject $createDelete -Names @('VirtualMachineLimit', 'virtualMachineLimit', 'VmLimit', 'vmLimit', 'MaximumVirtualMachineLimit', 'maximumVirtualMachineLimit')
+                        if ($null -eq $virtualMachineLimit) {
+                            $virtualMachineLimit = Get-AVDPropertyValue -InputObject $schedule -Names @('VirtualMachineLimit', 'virtualMachineLimit', 'VmLimit', 'vmLimit', 'MaximumVirtualMachineLimit', 'maximumVirtualMachineLimit')
+                        }
+
+                        $createDeleteData = if ($createDelete) {
+                            $minimumHostPoolSize = Get-AVDPropertyValue -InputObject $createDelete -Names @('MinimumHostPoolSize', 'minimumHostPoolSize', 'MinHostPoolSize', 'minHostPoolSize')
+                            $maximumHostPoolSize = Get-AVDPropertyValue -InputObject $createDelete -Names @('MaximumHostPoolSize', 'maximumHostPoolSize', 'MaxHostPoolSize', 'maxHostPoolSize')
+                            [ordered]@{
+                                virtualMachineLimit = $virtualMachineLimit
+                                rampUpMinimumHostPoolSize = if ($null -ne (Get-AVDPropertyValue -InputObject $createDelete -Names @('RampUpMinimumHostPoolSize', 'rampUpMinimumHostPoolSize'))) { Get-AVDPropertyValue -InputObject $createDelete -Names @('RampUpMinimumHostPoolSize', 'rampUpMinimumHostPoolSize') } else { $minimumHostPoolSize }
+                                rampUpMaximumHostPoolSize = if ($null -ne (Get-AVDPropertyValue -InputObject $createDelete -Names @('RampUpMaximumHostPoolSize', 'rampUpMaximumHostPoolSize'))) { Get-AVDPropertyValue -InputObject $createDelete -Names @('RampUpMaximumHostPoolSize', 'rampUpMaximumHostPoolSize') } else { $maximumHostPoolSize }
+                                rampDownMinimumHostPoolSize = if ($null -ne (Get-AVDPropertyValue -InputObject $createDelete -Names @('RampDownMinimumHostPoolSize', 'rampDownMinimumHostPoolSize'))) { Get-AVDPropertyValue -InputObject $createDelete -Names @('RampDownMinimumHostPoolSize', 'rampDownMinimumHostPoolSize') } else { $minimumHostPoolSize }
+                                rampDownMaximumHostPoolSize = if ($null -ne (Get-AVDPropertyValue -InputObject $createDelete -Names @('RampDownMaximumHostPoolSize', 'rampDownMaximumHostPoolSize'))) { Get-AVDPropertyValue -InputObject $createDelete -Names @('RampDownMaximumHostPoolSize', 'rampDownMaximumHostPoolSize') } else { $maximumHostPoolSize }
+                            }
+                        } else {
+                            $null
+                        }
+
+                        $daysOfWeek = Get-AVDPropertyValue -InputObject $schedule -Names @('DaysOfWeek', 'daysOfWeek')
+                        $scalingMethod = Get-AVDPropertyValue -InputObject $schedule -Names @('ScalingMethod', 'scalingMethod')
+                        $rampUpStartTime = Get-AVDScalingScheduleTimeText -Schedule $schedule -TimeNames @('RampUpStartTime', 'rampUpStartTime') -HourNames @('RampUpStartTimeHour', 'rampUpStartTimeHour') -MinuteNames @('RampUpStartTimeMinute', 'rampUpStartTimeMinute')
+                        $peakStartTime = Get-AVDScalingScheduleTimeText -Schedule $schedule -TimeNames @('PeakStartTime', 'peakStartTime') -HourNames @('PeakStartTimeHour', 'peakStartTimeHour') -MinuteNames @('PeakStartTimeMinute', 'peakStartTimeMinute')
+                        $rampDownStartTime = Get-AVDScalingScheduleTimeText -Schedule $schedule -TimeNames @('RampDownStartTime', 'rampDownStartTime') -HourNames @('RampDownStartTimeHour', 'rampDownStartTimeHour') -MinuteNames @('RampDownStartTimeMinute', 'rampDownStartTimeMinute')
+                        $offPeakStartTime = Get-AVDScalingScheduleTimeText -Schedule $schedule -TimeNames @('OffPeakStartTime', 'offPeakStartTime') -HourNames @('OffPeakStartTimeHour', 'offPeakStartTimeHour') -MinuteNames @('OffPeakStartTimeMinute', 'offPeakStartTimeMinute')
+
                         $spData.schedules += @{
-                            name = $schedule.Name
-                            daysOfWeek = if ($schedule.DaysOfWeek) { $schedule.DaysOfWeek -join ', ' } else { 'N/A' }
-                            rampUpStartTime = if ($schedule.RampUpStartTimeHour -eq $null) { 'N/A' } else { "{0:D2}:{1:D2}" -f $schedule.RampUpStartTimeHour, ($schedule.RampUpStartTimeMinute -ne $null ? $schedule.RampUpStartTimeMinute : 0) }
-                            rampUpLoadBalancingAlgorithm = $schedule.RampUpLoadBalancingAlgorithm
-                            rampUpMinimumHostsPct = $schedule.RampUpMinimumHostsPct
-                            rampUpCapacityThresholdPct = $schedule.RampUpCapacityThresholdPct
-                            peakStartTime = if ($schedule.PeakStartTimeHour -eq $null) { 'N/A' } else { "{0:D2}:{1:D2}" -f $schedule.PeakStartTimeHour, ($schedule.PeakStartTimeMinute -ne $null ? $schedule.PeakStartTimeMinute : 0) }
-                            peakLoadBalancingAlgorithm = $schedule.PeakLoadBalancingAlgorithm
-                            rampDownStartTime = if ($schedule.RampDownStartTimeHour -eq $null) { 'N/A' } else { "{0:D2}:{1:D2}" -f $schedule.RampDownStartTimeHour, ($schedule.RampDownStartTimeMinute -ne $null ? $schedule.RampDownStartTimeMinute : 0) }
-                            rampDownLoadBalancingAlgorithm = $schedule.RampDownLoadBalancingAlgorithm
-                            rampDownMinimumHostsPct = $schedule.RampDownMinimumHostsPct
-                            rampDownCapacityThresholdPct = $schedule.RampDownCapacityThresholdPct
-                            rampDownForceLogoffUser = $schedule.RampDownForceLogoffUser
-                            rampDownWaitTimeMinute = $schedule.RampDownWaitTimeMinute
-                            rampDownNotificationMessage = $schedule.RampDownNotificationMessage
-                            offPeakStartTime = if ($schedule.OffPeakStartTimeHour -eq $null) { 'N/A' } else { "{0:D2}:{1:D2}" -f $schedule.OffPeakStartTimeHour, ($schedule.OffPeakStartTimeMinute -ne $null ? $schedule.OffPeakStartTimeMinute : 0) }
-                            offPeakLoadBalancingAlgorithm = $schedule.OffPeakLoadBalancingAlgorithm
+                            name = Get-AVDPropertyValue -InputObject $schedule -Names @('Name', 'name')
+                            daysOfWeek = if (@($daysOfWeek).Count -gt 0) { @($daysOfWeek) -join ', ' } else { 'N/A' }
+                            scalingMethod = $scalingMethod
+                            virtualMachineLimit = $virtualMachineLimit
+                            createDelete = $createDeleteData
+                            rampUpStartTime = $rampUpStartTime
+                            rampUpLoadBalancingAlgorithm = Get-AVDPropertyValue -InputObject $schedule -Names @('RampUpLoadBalancingAlgorithm', 'rampUpLoadBalancingAlgorithm')
+                            rampUpMinimumHostsPct = Get-AVDPropertyValue -InputObject $schedule -Names @('RampUpMinimumHostsPct', 'rampUpMinimumHostsPct')
+                            rampUpCapacityThresholdPct = Get-AVDPropertyValue -InputObject $schedule -Names @('RampUpCapacityThresholdPct', 'rampUpCapacityThresholdPct')
+                            peakStartTime = $peakStartTime
+                            peakLoadBalancingAlgorithm = Get-AVDPropertyValue -InputObject $schedule -Names @('PeakLoadBalancingAlgorithm', 'peakLoadBalancingAlgorithm')
+                            rampDownStartTime = $rampDownStartTime
+                            rampDownLoadBalancingAlgorithm = Get-AVDPropertyValue -InputObject $schedule -Names @('RampDownLoadBalancingAlgorithm', 'rampDownLoadBalancingAlgorithm')
+                            rampDownMinimumHostsPct = Get-AVDPropertyValue -InputObject $schedule -Names @('RampDownMinimumHostsPct', 'rampDownMinimumHostsPct')
+                            rampDownCapacityThresholdPct = Get-AVDPropertyValue -InputObject $schedule -Names @('RampDownCapacityThresholdPct', 'rampDownCapacityThresholdPct')
+                            rampDownForceLogoffUser = Get-AVDPropertyValue -InputObject $schedule -Names @('RampDownForceLogoffUser', 'rampDownForceLogoffUser', 'RampDownForceLogoffUsers', 'rampDownForceLogoffUsers')
+                            rampDownWaitTimeMinute = Get-AVDPropertyValue -InputObject $schedule -Names @('RampDownWaitTimeMinute', 'rampDownWaitTimeMinute', 'RampDownWaitTimeMinutes', 'rampDownWaitTimeMinutes')
+                            rampDownNotificationMessage = Get-AVDPropertyValue -InputObject $schedule -Names @('RampDownNotificationMessage', 'rampDownNotificationMessage')
+                            offPeakStartTime = $offPeakStartTime
+                            offPeakLoadBalancingAlgorithm = Get-AVDPropertyValue -InputObject $schedule -Names @('OffPeakLoadBalancingAlgorithm', 'offPeakLoadBalancingAlgorithm')
                         }
                     }
                 }
@@ -647,6 +1236,7 @@ function Get-AVDInventoryData {
             Write-Host "    ⚠ Could not retrieve compute galleries: $($_.Exception.Message)" -ForegroundColor Yellow
         }
         
+        $subData.scanStatus = 'scanned'
         $inventory.subscriptions += $subData
     }
     
@@ -656,7 +1246,10 @@ function Get-AVDInventoryData {
 
 function Get-AVDConnectionDiagram {
     [CmdletBinding()]
-    param()
+    param(
+        [AllowEmptyCollection()]
+        [string[]]$SubscriptionIds
+    )
     
     Write-Host "    ○ Generating connection diagram..." -ForegroundColor Gray
     
@@ -665,10 +1258,20 @@ function Get-AVDConnectionDiagram {
         edges = @()
     }
     
-    $subscriptions = Get-AzSubscription | Where-Object { $_.State -eq 'Enabled' }
+    if ($PSBoundParameters.ContainsKey('SubscriptionIds')) {
+        $subscriptions = @(Resolve-AVDSubscriptionSelection -SubscriptionIds $SubscriptionIds)
+    } else {
+        $subscriptions = @(Resolve-AVDSubscriptionSelection)
+    }
     
     foreach ($sub in $subscriptions) {
-        Set-AzContext -SubscriptionId $sub.Id | Out-Null
+        try {
+            Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Write-Host "      ⚠ Skipping diagram subscription: $($sub.Name)" -ForegroundColor Yellow
+            continue
+        }
         
         # Add subscription node
         $diagram.nodes += @{

@@ -12,9 +12,10 @@ A comprehensive, production-ready web-based dashboard for documenting and monito
 ### 📊 Comprehensive Inventory Collection
 - **Host Pools**: Configuration, load balancing, session limits, registration tokens
 - **Session Hosts**: Status, sessions, VM sizes (SKU), network details, image source tracking, OS/agent versions, last heartbeat
+- **Session Host Configurations**: VM deployment profiles, image, disk, network, domain-join, security, diagnostics, custom script, and Key Vault URI references
 - **Workspaces**: Friendly names, application group associations
 - **Application Groups**: Desktop and RemoteApp configurations with published applications
-- **Scaling Plans**: Automated capacity management with schedule details and time zones
+- **Scaling Plans**: Automated capacity management with schedule details, scaling methods, VM limits, host-pool min/max sizes, and capacity thresholds; uses an ARM fallback when an installed Az model omits extended schedule fields
 - **Virtual Networks**: Network connectivity and session host associations
 - **Compute Galleries**: Custom image repositories with version tracking and usage analytics
 
@@ -33,13 +34,14 @@ A comprehensive, production-ready web-based dashboard for documenting and monito
 - **Detailed tables** with:
   - Session hosts with VM sizes (SKU), IP addresses, image sources, OS versions, agent versions, and heartbeat status
   - Host pool configurations with load balancing and session limits
-  - Scaling plan schedules with time zones and capacity thresholds
+  - Session-host configuration profiles with deployment settings and URI-only Key Vault references
+  - Scaling plan schedules with time zones, scaling methods, VM limits, host-pool min/max sizes, minimum-host percentages, and ramp-up/ramp-down capacity thresholds
   - Compute galleries with image definitions and version details
   - Application groups with published applications
   - Virtual networks with subnet configurations
 - **Landscape orientation** for session hosts table to accommodate all columns
 - **Color-coded status indicators** for availability and health
-- **Attribution footer** on every page with version information
+- **GetToTheCloud branded cover, wordmark, headers, and responsive page footers**
 - **Professional formatting** suitable for audits and documentation
 
 ### 🎯 Well-Architected Framework Assessment
@@ -69,8 +71,8 @@ A comprehensive, production-ready web-based dashboard for documenting and monito
 - **Integration ready** - Use exported JSON with BI tools or automation scripts
 
 ### 🔐 Secure Azure Integration
-- **Azure device authentication** flow
-- **Multi-subscription support** - automatically discovers all enabled subscriptions
+- **Interactive browser authentication** flow
+- **Multi-subscription support** - discovers enabled subscriptions, selects all eligible subscriptions by default, and allows browser-based scope selection
 - **Read-only access** - no modifications to your environment
 - **Session-based authentication** - credentials managed by Azure PowerShell SDK
 
@@ -78,7 +80,7 @@ A comprehensive, production-ready web-based dashboard for documenting and monito
 - **PowerShell 7+ requirement check** - ensures compatibility on startup
 - **Automatic module installation** - missing Azure modules are installed automatically
 - **Module version validation** - checks for minimum required versions
-- **Optional module updates** - use `-UpdateModules` to update all modules to latest versions
+- **Optional module updates** - when newer modules are detected, startup asks whether to update them; use `-UpdateModules` to update without prompting
 - **Comprehensive error reporting** - clear messages about any missing prerequisites
 
 ## 📋 Prerequisites
@@ -98,7 +100,7 @@ The following modules are required and will be checked/installed automatically o
 | Module | Minimum Version | Purpose |
 |--------|----------------|----------|
 | `Az.Accounts` | 2.0.0+ | Azure authentication and context management |
-| `Az.DesktopVirtualization` | 4.0.0+ | AVD-specific resources (host pools, workspaces, scaling plans) |
+| `Az.DesktopVirtualization` | 4.0.0+ | AVD-specific resources (host pools, workspaces, scaling plans, and optional profile cmdlet) |
 | `Az.Resources` | 6.0.0+ | Resource group and subscription queries |
 | `Az.Network` | 5.0.0+ | Virtual network and subnet information |
 | `Az.Compute` | 5.0.0+ | VM details, compute galleries, and image definitions |
@@ -108,6 +110,8 @@ The following modules are required and will be checked/installed automatically o
 - ✅ Outdated modules are detected and reported
 - ✅ Use `-UpdateModules` switch to automatically update to the latest versions
 - ✅ Modules are installed in `CurrentUser` scope (no admin rights required)
+
+Session-host configuration collection feature-detects `Get-AzWvdSessionHostConfiguration`. If the installed Az module does not expose that preview-era cmdlet, the collector uses `Invoke-AzRestMethod` against the `sessionHostConfigurations/default` ARM child resource instead. The `Az.DesktopVirtualization` minimum remains `4.0.0` for compatibility.
 
 **Manual Installation** (if automatic installation fails):
 ```powershell
@@ -123,6 +127,7 @@ Install-Module Az.Compute -MinimumVersion 5.0.0 -Scope CurrentUser -Force
 **Subscription Requirements:**
 - One or more Azure subscriptions with Azure Virtual Desktop resources
 - Subscriptions must be in "Enabled" state
+- Subscriptions without readable Azure resources are shown as skipped rather than reported as empty scans
 - Access to Azure Active Directory for authentication
 
 **Required Azure RBAC Permissions:**
@@ -132,6 +137,7 @@ Minimum permissions required to run the inventory:
 | Resource Type | Required Role | Scope | Purpose |
 |--------------|--------------|-------|----------|
 | **Azure Virtual Desktop** | `Desktop Virtualization Reader` | Subscription or Resource Group | Read host pools, workspaces, app groups, scaling plans |
+| **Session-host configurations** | `Desktop Virtualization Reader` | Host Pool Resource Group | Read the `sessionHostConfigurations/default` child resource |
 | **Virtual Machines** | `Reader` | Subscription or Resource Group | Read session host VM details, sizes, and network configuration |
 | **Network** | `Reader` | Subscription or Resource Group | Read virtual networks, subnets, and network interfaces |
 | **Compute Galleries** | `Reader` | Subscription or Resource Group | Read compute galleries and image definitions |
@@ -163,6 +169,7 @@ New-AzRoleAssignment -SignInName $userId `
 **Supported AVD Components:**
 - ✅ Host Pools (Pooled and Personal)
 - ✅ Session Hosts (Windows 10/11 multi-session, Windows Server 2019/2022)
+- ✅ Session Host Configuration Profiles (VM deployment settings and URI-only Key Vault credential references)
 - ✅ Application Groups (Desktop and RemoteApp)
 - ✅ Workspaces
 - ✅ Scaling Plans (with schedule details)
@@ -217,7 +224,7 @@ chmod +x start.sh
 **First Run:**
 - The script will automatically check for PowerShell 7+
 - Missing Azure modules will be installed automatically
-- Outdated modules will be reported (use `-UpdateModules` to update them)
+- Outdated modules will be reported and the script asks whether to update them (use `-UpdateModules` to skip the prompt and update automatically)
 
 ### 3. Access the Dashboard
 
@@ -231,8 +238,8 @@ http://localhost:8080
 On first access:
 1. The server will detect you're not authenticated
 2. Click **"Sign in to Azure"** button
-3. Follow the device code authentication prompt in the server console
-4. Complete authentication in your browser using the provided code
+3. Azure sign-in will open in your default browser
+4. Complete authentication, including any MFA or consent prompts
 5. Return to the dashboard - inventory will load automatically
 
 The authentication session persists until the server is stopped or you clear your Azure context.
@@ -246,6 +253,7 @@ The authentication session persists until the server is stopped or you clear you
 | 📊 **Overview** | Summary statistics, total resources, health status |
 | 🏊 **Host Pools** | Configuration details, load balancing, session limits |
 | 💻 **Session Hosts** | VM status, SKU size, sessions, network info, image sources |
+| 🧩 **Session Host Configurations** | VM deployment profile, image, disk, network, domain join, security, diagnostics, and Key Vault URI references |
 | 📁 **Workspaces** | User-facing resources and application group associations |
 | 📦 **Application Groups** | Desktop and RemoteApp configurations |
 | ⚖️ **Scaling Plans** | Automated start/stop schedules and capacity thresholds |
@@ -484,6 +492,20 @@ Install-Module Az.Compute -Force -Scope CurrentUser -MinimumVersion 5.0.0
 .\Start-AVDInventoryServer.ps1 -UpdateModules
 ```
 
+### Stopping the Server
+
+Press **Ctrl+C** in the same PowerShell window that started the server. The asynchronous listener will stop and the PowerShell prompt will return. When launched with `start.sh`, the script runs PowerShell in the foreground so Ctrl+C reaches the server directly. This standalone documenter uses a PowerShell `HttpListener`; `app.js` is browser-side code and does not start a Node.js server.
+
+If an inventory request is running, Ctrl+C cancels the Azure collection and closes that in-progress browser request before returning to the prompt.
+
+If the prompt still does not return, stop only the matching PowerShell process from another PowerShell window:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" |
+  Where-Object CommandLine -like '*Start-AVDInventoryServer.ps1*' |
+  ForEach-Object { Stop-Process -Id $_.ProcessId }
+```
+
 ### Authentication Errors
 
 **Problem**: "Failed to authenticate" or "Access denied"
@@ -547,6 +569,10 @@ pkill -f "Start-AVDInventoryServer.ps1"
 Update-Module Az.DesktopVirtualization -Force
 ```
 
+### Session-Host Configuration Shows "Unavailable"
+
+The profile collector first checks for `Get-AzWvdSessionHostConfiguration` and then tries the ARM child resource through `Invoke-AzRestMethod`. Update `Az.Accounts` and `Az.DesktopVirtualization` if both paths are unavailable, and verify `Desktop Virtualization Reader` access to the host pool resource group. A `Not configured` status means the host pool does not currently have the `default` profile resource.
+
 ### WAF Configuration Not Loading
 
 **Problem**: "WAF configuration not loaded" warning on server startup
@@ -597,9 +623,11 @@ The web server exposes the following REST endpoints:
 |--------|----------|-------------|----------|
 | `GET` | `/` | Main dashboard HTML page | HTML document |
 | `GET` | `/api/auth/status` | Check Azure authentication status | `{authenticated: boolean, context: object}` |
-| `POST` | `/api/auth/login` | Initiate Azure device authentication | `{success: boolean, message: string}` |
-| `GET` | `/api/inventory/data` | Retrieve complete AVD inventory | JSON inventory data (see schema) |
+| `POST` | `/api/auth/login` | Initiate Azure interactive browser authentication | `{success: boolean, message: string}` |
+| `GET` | `/api/subscriptions` | Discover enabled subscriptions for the authenticated account | `{subscriptions: [...]}` |
+| `GET` or `POST` | `/api/inventory/data` | Retrieve complete AVD inventory; POST accepts `{subscriptionIds: [...]}` | JSON inventory data (see schema) |
 | `POST` | `/api/inventory/refresh` | Force refresh inventory from Azure | `{success: boolean, lastUpdate: string}` |
+| `GET` or `POST` | `/api/diagram/connections` | Generate the connection diagram; POST accepts `{subscriptionIds: [...]}` | Diagram nodes and edges |
 | `GET` | `/api/waf/config` | Retrieve WAF assessment configuration | JSON configuration with rules and thresholds |
 | `GET` | `/app.js` | Client JavaScript application | JavaScript code |
 | `GET` | `/styles.css` | Dashboard stylesheet | CSS styles |
@@ -628,6 +656,9 @@ The web server exposes the following REST endpoints:
     {
       "name": "Production",
       "id": "sub-id",
+      "tenantId": "tenant-id",
+      "scanStatus": "scanned",
+      "scanError": null,
       "hostPools": [...],
       "sessionHosts": [...],
       "workspaces": [...],
@@ -640,13 +671,18 @@ The web server exposes the following REST endpoints:
 }
 ```
 
+When no subscription IDs are supplied, the server scans all enabled subscriptions returned by Azure. The browser selector sends the selected IDs for inventory, refresh, and diagram requests; IDs outside that discovered set are rejected.
+
+Each host pool includes a `sessionHostConfiguration` object. Its `status` is `configured`, `notConfigured`, or `unavailable`; `source` identifies the Az cmdlet or ARM fallback used. Configuration data includes `vmLocation`, `vmResourceGroup`, `vmNamePrefix`, `vmSize`, `availabilityZones`, `vmTags`, `image`, `disk`, `network`, `domainJoin`, `security`, `bootDiagnostics`, and `customConfigurationScriptUrl`. Credential fields contain normalized Key Vault URI metadata only, and `keyVaultReferences` identifies each URI's purpose. No Key Vault secret is read.
+
 ## 🔒 Security & Best Practices
 
 ### Security Considerations
 - ✅ **Localhost only**: Server binds to `localhost` by default (not exposed to network)
 - ✅ **No credential storage**: Azure credentials managed entirely by Azure PowerShell SDK
-- ✅ **Device code auth**: Secure OAuth flow with Azure AD
+- ✅ **Interactive browser auth**: Secure OAuth flow with Azure AD
 - ✅ **Read-only access**: No modification capabilities - inventory only
+- ✅ **Secret-safe profile inventory**: Key Vault URIs are recorded for reference, but secret values are never requested, resolved, or exported
 - ✅ **Session-based**: Authentication tied to PowerShell session lifetime
 - ✅ **HTTPS compatible**: Can be proxied through HTTPS reverse proxy if needed
 
@@ -654,6 +690,7 @@ The web server exposes the following REST endpoints:
 - **Minimum**: `Reader` role on all resource groups containing AVD resources
 - **Recommended**: `Reader` role at subscription level for complete inventory and automatic discovery
 - **Alternative**: `Desktop Virtualization Reader` for AVD-specific resources + `Reader` for VMs and networks
+- **Key Vault**: No Key Vault data-plane permission is required; the collector records secret URIs from the AVD profile and never retrieves secret values
 - **Not required**: Contributor, Owner, or any write/modify permissions
 
 ### Production Deployment

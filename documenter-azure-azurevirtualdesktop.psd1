@@ -1,12 +1,12 @@
 @{
     # Module metadata
     RootModule        = 'documenter-azure-azurevirtualdesktop.psm1'
-    ModuleVersion     = '1.2.224'
+    ModuleVersion     = '1.2.231'
     GUID              = 'b5e91f3c-2a7d-4e08-bc4f-1d6a83f0e2c9'
     Author            = 'Alex ter Neuzen'
     CompanyName       = 'GetToTheCloud'
     Copyright         = '(c) 2025 Alex ter Neuzen. All rights reserved.'
-    Description       = 'Comprehensive inventory and documentation tool for Azure Virtual Desktop (AVD) environments. Collects host pools, session hosts, workspaces, application groups, scaling plans, virtual networks, and compute gallery inventory and presents it in a local web-based dashboard with WAF assessment and professional PDF export.'
+    Description       = 'Comprehensive inventory and documentation tool for Azure Virtual Desktop (AVD) environments. Collects host pools, session hosts, session-host configuration profiles, workspaces, application groups, dynamic scaling plans, virtual networks, and compute gallery inventory, then presents it in a local web-based dashboard with WAF assessment and professional PDF export.'
     PowerShellVersion = '7.0'
 
     # Required modules (installed from PSGallery on demand by the module)
@@ -33,6 +33,7 @@
         'index.html'
         'app.js'
         'styles.css'
+        'gettothecloud-logo.webp'
         'waf-config.json'
         'LICENSE'
         'README.md'
@@ -63,6 +64,23 @@
             ProjectUri   = 'https://github.com/GetToThe-Cloud/documenter-azure-azurevirtualdesktop'
             IconUri      = ''
             ReleaseNotes = @'
+            v1.2.231
+              - Fixed dynamic scaling exports when VM limits and host-pool minimum/maximum sizes are nested in create/delete schedule settings
+              - Added an ARM scaling-plan fallback for Az models that omit extended schedule fields and normalized REST and legacy schedule times
+              - Added session-host configuration profile details to the PDF, including URI-only Key Vault references
+              - Added the GetToTheCloud wordmark and branded navy/azure report styling with responsive headers and footers
+              - Served the packaged WebP wordmark as binary data from the PowerShell HttpListener for reliable PDF branding
+
+            v1.2.230
+              - Consolidated security hardening, including XSS escaping, strict WAF condition parsing, and CDN SRI attributes
+              - Added subscription scope selection, validation, permission visibility, and interactive browser login
+              - Added reliable asynchronous Ctrl+C shutdown for the PowerShell HttpListener and direct foreground execution from start.sh
+              - Added session-host configuration profile inventory with ARM fallback and VM, image, disk, network, domain-join, security, diagnostics, and custom-script details
+              - Records Key Vault credential references as URI metadata only; secret values are never retrieved
+              - Added dynamic scaling schedule inventory for scaling methods, VM limits, host-pool minimum and maximum sizes, minimum-host percentages, and capacity thresholds
+              - Displays the new scaling and session-host configuration details in the dashboard and PDF export
+              - Prompts before updating newer Az modules; -UpdateModules remains available for non-interactive automatic updates
+
 v1.2.223
   - Version bump to 1.2.223
   - Edit-WAFConfig interactive console wizard (pillar metadata, rule add/edit/delete,

@@ -20,4 +20,4 @@ sleep 1
 
 # Start the server with all command line arguments passed through
 cd "$SCRIPT_DIR"
-pwsh -File "./Start-AVDInventoryServer.ps1" "$@"
+exec pwsh -File "./Start-AVDInventoryServer.ps1" "$@"

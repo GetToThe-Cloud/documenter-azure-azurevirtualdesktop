@@ -1,12 +1,34 @@
 # Azure Virtual Desktop Inventory - Change Summary
 
-## Latest Update: 2026-08-06 (v1.2.224)
+## Latest Update: 2026-08-12 (v1.2.231)
 
-### Security Fixes (Module Version 1.2.224)
+### PDF and Scaling Report Improvements
 
-- **XSS hardening**: added `escapeHtml`/`esc` helper; all Azure-sourced values (resource names, IDs, descriptions, error messages, account/subscription names, WAF config text) are now HTML-escaped before insertion via `innerHTML`
-- **Removed `eval()`**: WAF check conditions (`count`/`uniqueCount` operators) now use a strict `compareNumeric` parser that only accepts `<operator> <number>` expressions
-- **Subresource Integrity**: all CDN `<script>`/`<link>` tags in `index.html` now carry `integrity` (sha384) and `crossorigin="anonymous"` attributes
+- **Dynamic scaling values**: fixed nested create/delete schedule settings so VM limit `20` and host-pool minimum/maximum values such as `5` and `10` reach both the dashboard and PDF export.
+- **Scaling compatibility**: when the installed Az model omits extended schedule fields, the collector falls back to the ARM scaling-plan resource and normalizes both REST and legacy schedule time formats.
+- **Session-host configuration profiles**: added the complete profile inventory to the PDF, including deployment, image, disk, network, domain-join, security, diagnostics, custom-script, and URI-only Key Vault metadata.
+- **Report styling**: added the GetToTheCloud wordmark, branded navy/azure/paper styling, branded cover, interior page headers, responsive page numbers, and improved table defaults.
+- **Logo delivery**: the PowerShell HttpListener now serves the packaged WebP wordmark as binary data for reliable PDF branding.
+
+---
+
+## Previous Update: 2026-08-12 (v1.2.230)
+
+### Consolidated Updates
+
+- **XSS hardening**: added `escapeHtml`/`esc` helper; Azure-sourced values are HTML-escaped before insertion via `innerHTML`.
+- **Removed `eval()`**: WAF conditions now use a strict numeric comparison parser.
+- **Subresource Integrity**: CDN assets in `index.html` carry `integrity` and `crossorigin="anonymous"` attributes.
+- **Subscription scope**: added subscription selection, scope validation, and visibility for subscriptions without readable resources.
+- **Authentication and shutdown**: added interactive browser login, an async listener shutdown path for Ctrl+C, cleanup after failed listener startup, and direct foreground execution from `start.sh`.
+- **Session-host configuration profiles**: added profile inventory with cmdlet detection and documented ARM REST fallback.
+- **Profile details**: captures VM, image, disk, network, domain-join, security, boot diagnostics, custom-script, and provisioning metadata.
+- **Key Vault safety**: records credential references as URI metadata only; secret values are never retrieved.
+- **Dashboard**: added a dedicated Session Host Configurations view.
+- **Dynamic scaling settings**: scaling-plan schedules now inventory and display scaling methods, VM limits, ramp-up/ramp-down minimum and maximum host-pool sizes, minimum-host percentages, and capacity thresholds in the dashboard and PDF export.
+- **PDF layout**: increased spacing below report subsection dividers so rules no longer overlap headings, bullets, or WAF score text.
+- **Module updates**: startup asks whether newer Az modules should be updated; `-UpdateModules` still updates them automatically without prompting.
+- **Runtime clarification**: the standalone documenter uses PowerShell for its server; `app.js` runs in the browser and does not start Node.js.
 
 ---
 

@@ -52,6 +52,9 @@
                         <li><a href="#" onclick="showSection('sessionhosts')" class="nav-link" data-section="sessionhosts">
                             <span class="icon">💻</span> Session Hosts
                         </a></li>
+                        <li><a href="#" onclick="showSection('sessionhostconfigurations')" class="nav-link" data-section="sessionhostconfigurations">
+                            <span class="icon">🧩</span> Host Configuration
+                        </a></li>
                         <li><a href="#" onclick="showSection('workspaces')" class="nav-link" data-section="workspaces">
                             <span class="icon">📁</span> Workspaces
                         </a></li>
@@ -84,7 +87,7 @@
                     <div class="auth-card">
                         <h2>🔐 Azure Authentication</h2>
                         <p>Authentication is being requested automatically.</p>
-                        <p>Please check your terminal or browser for the device code login prompt.</p>
+                        <p>Azure sign-in will open in your default browser. Complete authentication there.</p>
                         <button onclick="authenticateAzure()" class="btn btn-primary btn-large">
                             Retry Sign in
                         </button>
@@ -97,6 +100,20 @@
                     <div class="info-banner">
                         <strong>About Azure Virtual Desktop:</strong>
                         <p id="overviewExplanation">Azure Virtual Desktop (AVD) is a cloud-based desktop and application virtualization service. This inventory shows all AVD resources and their relationships.</p>
+                    </div>
+                    <div id="subscriptionScope" class="subscription-scope" style="display: none;">
+                        <div class="subscription-scope-header">
+                            <div>
+                                <h3>Subscriptions to scan</h3>
+                                <p id="subscriptionSelectionStatus" class="subscription-selection-status"></p>
+                            </div>
+                            <div class="subscription-scope-actions">
+                                <button id="selectAllSubscriptionsBtn" type="button" class="btn btn-secondary">Select all</button>
+                                <button id="clearSubscriptionsBtn" type="button" class="btn btn-secondary">Clear all</button>
+                                <button id="scanSelectedSubscriptionsBtn" type="button" class="btn btn-primary">Scan selected</button>
+                            </div>
+                        </div>
+                        <div id="subscriptionSelectorList" class="subscription-selector-list"></div>
                     </div>
                     <div class="summary-cards">
                         <div class="card">
@@ -184,6 +201,16 @@
                         <p id="sessionHostsExplanation">Session hosts are the VMs that run user sessions. They connect to virtual networks and can be managed by scaling plans.</p>
                     </div>
                     <div id="sessionHostsList" class="data-list"></div>
+                </section>
+
+                <!-- Session Host Configurations Section -->
+                <section id="sessionhostconfigurations" class="content-section">
+                    <h2>🧩 Session Host Configurations</h2>
+                    <div class="info-banner">
+                        <strong>What are Session Host Configurations?</strong>
+                        <p id="sessionHostConfigurationsExplanation">Session-host configuration profiles define the VM, image, disk, network, domain-join, security, diagnostics, and custom-script settings used when session hosts are created.</p>
+                    </div>
+                    <div id="sessionHostConfigurationsList" class="data-list"></div>
                 </section>
 
                 <!-- Workspaces Section -->
